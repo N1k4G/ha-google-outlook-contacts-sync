@@ -1,0 +1,65 @@
+{
+  "resourceName": "people/c12345678901234567",
+  "etag": "EXAMPLE_ETAG",
+  "metadata": {
+    "sources": [{"type": "CONTACT", "id": "c12345678901234567"}],
+    "objectType": "PERSON"
+  },
+  "names": [
+    {
+      "metadata": {"primary": true, "source": {"type": "CONTACT"}},
+      "displayName": "Jane Example",
+      "givenName": "Jane",
+      "familyName": "Example"
+    }
+  ],
+  "emailAddresses": [
+    {
+      "metadata": {"primary": true},
+      "value": "jane.example@personal.example",
+      "type": "home"
+    },
+    {
+      "metadata": {},
+      "value": "jane.example@work.example",
+      "type": "work"
+    }
+  ],
+  "phoneNumbers": [
+    {
+      "metadata": {"primary": true},
+      "value": "+49 170 1234567",
+      "type": "mobile"
+    },
+    {
+      "metadata": {},
+      "value": "+49 30 12345678",
+      "type": "home"
+    }
+  ],
+  "birthdays": [
+    {
+      "metadata": {"primary": true},
+      "date": {"year": 1985, "month": 3, "day": 15}
+    }
+  ],
+  "addresses": [
+    {
+      "metadata": {"primary": true},
+      "type": "home",
+      "streetAddress": "Musterstraße 1",
+      "city": "Berlin",
+      "region": "Berlin",
+      "postalCode": "10115",
+      "countryCode": "DE"
+    }
+  ],
+  "organizations": [
+    {
+      "metadata": {"primary": true},
+      "name": "Example Corp",
+      "title": "Software Engineer",
+      "department": "Engineering"
+    }
+  ]
+}

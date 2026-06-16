@@ -1,0 +1,13 @@
+sync_now:
+  name: Sync Now
+  description: Trigger an immediate Google to Outlook contacts delta sync.
+  fields: {}
+
+full_sync:
+  name: Full Resync
+  description: >-
+    Run a full reconciliation: fetch all Google contacts, adopt matching
+    Outlook contacts by name (avoiding duplicates), push any differences, and
+    reset the delta token. Use this to recover from missing or out-of-sync
+    contacts.
+  fields: {}

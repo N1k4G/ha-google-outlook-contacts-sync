@@ -1,0 +1,81 @@
+{
+  "config": {
+    "step": {
+      "ms_credentials": {
+        "title": "Microsoft Account — App Credentials",
+        "description": "Enter the Client ID and Client Secret from your Entra App Registration.",
+        "data": {
+          "ms_client_id": "Microsoft Client ID",
+          "ms_client_secret": "Microsoft Client Secret"
+        }
+      },
+      "ms_auth_url": {
+        "title": "Microsoft Account — Authorize",
+        "description": "Click the link below to sign in with your personal Microsoft account and grant Contacts access. After authorization you will be redirected back to Home Assistant automatically.\n\n[Authorize Microsoft Account]({auth_url})"
+      },
+      "google_credentials": {
+        "title": "Google Account — App Credentials",
+        "description": "Enter the Client ID and Client Secret from your Google Cloud OAuth 2.0 Desktop client.",
+        "data": {
+          "google_client_id": "Google Client ID",
+          "google_client_secret": "Google Client Secret"
+        }
+      },
+      "google_auth_url": {
+        "title": "Google Account — Authorize",
+        "description": "A browser window will open for you to sign in with your Google account and grant Contacts access. After authorization you will be redirected back to Home Assistant automatically."
+      }
+    },
+    "error": {
+      "ms_auth_failed": "Microsoft authorization failed. Check your client credentials and try again.",
+      "google_auth_failed": "Google authorization failed. Check your client credentials and the authorization code.",
+      "cannot_connect": "Unable to connect. Check your credentials and network connection.",
+      "unknown": "Unexpected error. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This integration is already configured.",
+      "ms_auth_timeout": "Microsoft authorization timed out. Please restart the setup.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sync Options",
+        "data": {
+          "sync_interval_hours": "Sync interval (hours)",
+          "delete_removed": "Delete Outlook contacts when removed from Google",
+          "auto_remove_duplicates": "Auto-remove duplicate Outlook contacts during sync (matched by name — destructive)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_sync": { "name": "Last sync" },
+      "last_sync_result": { "name": "Last sync result" },
+      "next_sync": { "name": "Next sync" },
+      "synced_contacts": { "name": "Synced contacts" },
+      "duplicates_removed": { "name": "Duplicates removed" },
+      "dry_run_preview": { "name": "Dry-run preview" }
+    },
+    "binary_sensor": {
+      "sync_problem": { "name": "Sync problem" }
+    },
+    "button": {
+      "sync_now": { "name": "Sync now" },
+      "full_resync": { "name": "Full resync" },
+      "run_dry_run": { "name": "Run dry-run" }
+    }
+  },
+  "services": {
+    "sync_now": {
+      "name": "Sync Now",
+      "description": "Trigger an immediate contacts delta sync."
+    },
+    "full_sync": {
+      "name": "Full Resync",
+      "description": "Run a full reconciliation: adopt existing Outlook contacts by name, fix drift, and reset the delta token."
+    }
+  }
+}

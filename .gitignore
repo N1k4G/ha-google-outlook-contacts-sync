@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Secrets — NEVER commit these
+credentials.json
+*.json.secret
+secrets.yaml
+*.token
+*token-cache*
+.storage/
+token*.pickle
+
+# HA runtime state
+home-assistant_v2.db
+home-assistant.log*
+.HA_VERSION
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# Linting/type checking
+.mypy_cache/
+.ruff_cache/
+
+# detect-secrets — .secrets.baseline IS committed (pre-commit needs it)
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

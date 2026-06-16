@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ha-google-outlook-contacts-sync"
+version = "1.0.0"
+requires-python = ">=3.13"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "ANN"]
+ignore = [
+  "ANN401",  # Any allowed in some places
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_ignores = false
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+module = ["O365.*", "googleapiclient.*", "google.oauth2.*", "google_auth_oauthlib.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "DEBUG"
+
+[tool.coverage.run]
+source = ["custom_components/google_outlook_contacts_sync"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 50

@@ -1,0 +1,83 @@
+{
+  "config": {
+    "step": {
+      "ms_credentials": {
+        "title": "Microsoft-Konto — App-Anmeldedaten",
+        "description": "Gib die Client-ID und das Client-Secret aus deiner Entra-App-Registrierung ein.",
+        "data": {
+          "ms_client_id": "Microsoft Client-ID",
+          "ms_client_secret": "Microsoft Client-Secret"
+        }
+      },
+      "ms_auth_url": {
+        "title": "Microsoft-Konto — Autorisierung",
+        "description": "Klicke auf den Link unten, um dich mit deinem persönlichen Microsoft-Konto anzumelden und den Kontaktzugriff zu genehmigen. Nach der Autorisierung wirst du automatisch zu Home Assistant weitergeleitet.\n\n[Microsoft-Konto autorisieren]({auth_url})"
+      },
+      "google_credentials": {
+        "title": "Google-Konto — App-Anmeldedaten",
+        "description": "Gib die Client-ID und das Client-Secret deines Google Cloud OAuth 2.0 Desktop-Clients ein.",
+        "data": {
+          "google_client_id": "Google Client-ID",
+          "google_client_secret": "Google Client-Secret"
+        }
+      },
+      "google_auth_url": {
+        "title": "Google-Konto — Autorisierung",
+        "description": "Ein Browserfenster öffnet sich, damit du dich mit deinem Google-Konto anmelden und den Kontaktzugriff genehmigen kannst. Nach der Autorisierung wirst du automatisch zu Home Assistant weitergeleitet."
+      }
+    },
+    "error": {
+      "ms_auth_failed": "Microsoft-Autorisierung fehlgeschlagen. Überprüfe deine Client-Anmeldedaten und versuche es erneut.",
+      "ms_url_failed": "Microsoft-Anmelde-URL konnte nicht erstellt werden. Überprüfe deine Anmeldedaten und die Home Assistant-Protokolle.",
+      "google_auth_failed": "Google-Autorisierung fehlgeschlagen. Überprüfe deine Client-Anmeldedaten und den Autorisierungscode.",
+      "cannot_connect": "Verbindung nicht möglich. Überprüfe deine Anmeldedaten und die Netzwerkverbindung.",
+      "unknown": "Unerwarteter Fehler. Prüfe die Home Assistant-Protokolle."
+    },
+    "abort": {
+      "already_configured": "Diese Integration ist bereits konfiguriert.",
+      "missing_external_url": "Die externe URL von Home Assistant ist nicht konfiguriert. Gehe zu Einstellungen → System → Netzwerk und trage die Home Assistant-URL ein, dann versuche es erneut.",
+      "ms_auth_timeout": "Microsoft-Autorisierung abgelaufen. Bitte starte die Einrichtung neu.",
+      "reauth_successful": "Erneute Authentifizierung erfolgreich."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sync-Optionen",
+        "data": {
+          "sync_interval_hours": "Sync-Intervall (Stunden)",
+          "delete_removed": "Outlook-Kontakte löschen, wenn sie aus Google entfernt wurden",
+          "auto_remove_duplicates": "Doppelte Outlook-Kontakte beim Sync automatisch entfernen (Abgleich über Namen — destruktiv)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_sync": { "name": "Letzte Synchronisierung" },
+      "last_sync_result": { "name": "Ergebnis der letzten Synchronisierung" },
+      "next_sync": { "name": "Nächste Synchronisierung" },
+      "synced_contacts": { "name": "Synchronisierte Kontakte" },
+      "duplicates_removed": { "name": "Entfernte Duplikate" },
+      "dry_run_preview": { "name": "Probelauf-Vorschau" }
+    },
+    "binary_sensor": {
+      "sync_problem": { "name": "Synchronisierungsproblem" }
+    },
+    "button": {
+      "sync_now": { "name": "Jetzt synchronisieren" },
+      "full_resync": { "name": "Vollständige Neusynchronisierung" },
+      "run_dry_run": { "name": "Probelauf starten" }
+    }
+  },
+  "services": {
+    "sync_now": {
+      "name": "Jetzt synchronisieren",
+      "description": "Löst eine sofortige Kontaktsynchronisierung aus."
+    },
+    "full_sync": {
+      "name": "Vollständige Neusynchronisierung",
+      "description": "Führt einen vollständigen Abgleich durch: übernimmt bestehende Outlook-Kontakte über den Namen, korrigiert Abweichungen und setzt den Delta-Token zurück."
+    }
+  }
+}

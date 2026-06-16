@@ -1,0 +1,22 @@
+{
+  "resourceName": "people/c99999999999999999",
+  "etag": "EXAMPLE_ETAG_2",
+  "metadata": {
+    "sources": [{"type": "CONTACT", "id": "c99999999999999999"}],
+    "objectType": "PERSON"
+  },
+  "names": [
+    {
+      "metadata": {"primary": true},
+      "displayName": "John Doe",
+      "givenName": "John",
+      "familyName": "Doe"
+    }
+  ],
+  "birthdays": [
+    {
+      "metadata": {"primary": true},
+      "date": {"month": 7, "day": 4}
+    }
+  ]
+}
