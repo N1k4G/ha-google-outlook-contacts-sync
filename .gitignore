@@ -43,9 +43,10 @@ coverage.xml
 
 # detect-secrets — .secrets.baseline IS committed (pre-commit needs it)
 
-# IDE
+# IDE / tooling
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 

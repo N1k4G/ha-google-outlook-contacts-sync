@@ -5,7 +5,7 @@ Thanks for your interest in contributing!
 ## Development setup
 
 ```bash
-git clone https://github.com/niklas-gorman/ha-google-outlook-contacts-sync
+git clone https://github.com/N1k4G/ha-google-outlook-contacts-sync
 cd ha-google-outlook-contacts-sync
 python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements_test.txt
