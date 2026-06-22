@@ -1,0 +1,18 @@
+name: HACS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # 'brands' requires the domain to be listed in home-assistant/brands,
+          # which is a separate manual submission. Ignore until that is merged.
+          ignore: brands

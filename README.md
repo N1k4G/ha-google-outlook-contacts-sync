@@ -1,6 +1,7 @@
 # Google Outlook Contacts Sync — Home Assistant Integration
 
 [![Tests](https://github.com/N1k4G/ha-google-outlook-contacts-sync/actions/workflows/test.yaml/badge.svg)](https://github.com/N1k4G/ha-google-outlook-contacts-sync/actions/workflows/test.yaml)
+[![Hassfest](https://github.com/N1k4G/ha-google-outlook-contacts-sync/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/N1k4G/ha-google-outlook-contacts-sync/actions/workflows/hassfest.yaml)
 [![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
 
 One-way sync from **Google Contacts → Microsoft Outlook** (personal Microsoft account) as a Home Assistant custom integration. Runs on schedule (default every 24 h) or on demand via a service call.
@@ -51,7 +52,7 @@ You need two sets of OAuth credentials — one for Microsoft, one for Google. Bo
 
 ## Installation
 
-### HACS (recommended)
+### HACS (custom repository)
 
 1. In HACS, go to **Integrations → ⋮ → Custom repositories**.
 2. Add `https://github.com/N1k4G/ha-google-outlook-contacts-sync` with category **Integration**.
@@ -174,4 +175,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE) © 2026 N1k4G
