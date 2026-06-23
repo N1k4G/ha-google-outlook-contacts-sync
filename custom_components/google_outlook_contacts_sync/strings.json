@@ -24,6 +24,10 @@
       "google_auth_url": {
         "title": "Google Account — Authorize",
         "description": "A browser window will open for you to sign in with your Google account and grant Contacts access. After authorization you will be redirected back to Home Assistant automatically."
+      },
+      "reauth_confirm": {
+        "title": "Re-authorize Google Account",
+        "description": "Your Google authorization has expired or been revoked. Click Submit to sign in again with your Google account and restore contact sync."
       }
     },
     "error": {
