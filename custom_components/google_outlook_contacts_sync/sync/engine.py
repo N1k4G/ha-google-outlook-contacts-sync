@@ -18,7 +18,7 @@ from .dedup import (
     choose_keeper,
     find_duplicate_groups,
 )
-from .google_client import GoogleContactsClient, SyncTokenExpiredError
+from .google_client import GoogleAuthError, GoogleContactsClient, SyncTokenExpiredError
 from .graph_client import GraphContactsClient
 from .mapping import contact_hash, is_deleted, to_graph_contact
 
@@ -165,6 +165,8 @@ class SyncEngine:
             _LOGGER.warning("Google sync token expired; performing full re-sync")
             self._store.sync_token = None
             people, new_sync_token = await self._fetch_people(None)
+        except GoogleAuthError:
+            raise
         except Exception as exc:
             return self._fail_fetch(result, started, exc)
 
@@ -187,6 +189,8 @@ class SyncEngine:
 
         try:
             people, new_sync_token = await self._fetch_people(None)
+        except GoogleAuthError:
+            raise
         except Exception as exc:
             return self._fail_fetch(result, started, exc)
 

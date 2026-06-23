@@ -7,10 +7,12 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_SYNC_INTERVAL_HOURS, DEFAULT_SYNC_INTERVAL_HOURS
 from .sync.engine import SyncEngine, SyncPlan, SyncResult
+from .sync.google_client import GoogleAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +42,8 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
         """Fetch the latest data — called by the coordinator on schedule."""
         try:
             return await self._engine.async_sync()
+        except GoogleAuthError as exc:
+            raise ConfigEntryAuthFailed(f"Google authentication failed: {exc}") from exc
         except Exception as exc:
             raise UpdateFailed(f"Sync failed: {exc}") from exc
 
@@ -47,6 +51,8 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
         """Run a full reconciliation and publish the result to entities."""
         try:
             result = await self._engine.async_full_sync()
+        except GoogleAuthError as exc:
+            raise ConfigEntryAuthFailed(f"Google authentication failed: {exc}") from exc
         except Exception as exc:
             self.async_set_update_error(UpdateFailed(f"Full resync failed: {exc}"))
             return

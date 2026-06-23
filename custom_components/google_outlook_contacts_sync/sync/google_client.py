@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from google.auth.exceptions import RefreshError  # type: ignore[import-untyped]
 from google.oauth2.credentials import Credentials  # type: ignore[import-untyped]
 from googleapiclient.discovery import build  # type: ignore[import-untyped]
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
@@ -76,6 +77,8 @@ class GoogleContactsClient:
                         "Google sync token has expired; full re-sync required."
                     ) from exc
                 raise
+            except RefreshError as exc:
+                raise GoogleAuthError(str(exc)) from exc
 
             connections: list[dict[str, Any]] = response.get("connections", [])
             all_people.extend(connections)
@@ -123,3 +126,7 @@ class GoogleContactsClient:
 
 class SyncTokenExpiredError(Exception):
     """Raised when the Google sync token is no longer valid."""
+
+
+class GoogleAuthError(Exception):
+    """Raised when Google credentials are invalid or expired (e.g. invalid_grant)."""
