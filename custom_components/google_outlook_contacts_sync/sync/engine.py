@@ -19,7 +19,7 @@ from .dedup import (
     find_duplicate_groups,
 )
 from .google_client import GoogleAuthError, GoogleContactsClient, SyncTokenExpiredError
-from .graph_client import GraphContactsClient
+from .graph_client import GraphContactsClient, MSAuthError
 from .mapping import contact_hash, is_deleted, to_graph_contact
 
 _LOGGER = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ class SyncEngine:
             _LOGGER.warning("Google sync token expired; performing full re-sync")
             self._store.sync_token = None
             people, new_sync_token = await self._fetch_people(None)
-        except GoogleAuthError:
+        except (GoogleAuthError, MSAuthError):
             raise
         except Exception as exc:
             return self._fail_fetch(result, started, exc)
@@ -189,7 +189,7 @@ class SyncEngine:
 
         try:
             people, new_sync_token = await self._fetch_people(None)
-        except GoogleAuthError:
+        except (GoogleAuthError, MSAuthError):
             raise
         except Exception as exc:
             return self._fail_fetch(result, started, exc)
@@ -360,6 +360,8 @@ class SyncEngine:
         resource_name = decision.resource_name
         try:
             await self._apply(decision, result)
+        except MSAuthError:
+            raise
         except Exception as exc:
             _LOGGER.error("Unexpected error processing %s: %s", resource_name, exc)
             result.failed += 1

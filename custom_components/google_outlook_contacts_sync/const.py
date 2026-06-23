@@ -54,6 +54,7 @@ DATA_DRY_RUN_COORDINATOR = "dry_run_coordinator"
 DATA_STORE = "store"
 DATA_MS_OAUTH_FLOWS = "ms_oauth_flows"
 DATA_GOOGLE_OAUTH_FLOWS = "google_oauth_flows"
+DATA_REAUTH_PROVIDER = "reauth_provider"
 
 # Device metadata (groups all entities under one HA device)
 DEVICE_NAME = "Google Outlook Contacts Sync"

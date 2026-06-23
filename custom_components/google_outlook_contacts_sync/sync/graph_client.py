@@ -27,6 +27,13 @@ class GraphContactsClient:
     def __init__(self, account: Account) -> None:
         self._account = account
 
+    def _require_auth(self) -> None:
+        """Raise MSAuthError when MSAL can no longer provide a valid token."""
+        if not self._account.is_authenticated:
+            raise MSAuthError(
+                "Microsoft token is invalid or expired; re-authentication required."
+            )
+
     def list_contacts(self) -> list[Any]:
         """Return all contacts from the default address book."""
         return list(self._account.address_book().get_contacts(limit=None))
@@ -46,6 +53,7 @@ class GraphContactsClient:
         while url:
             response = self._account.con.get(url, params=params)
             if not response:
+                self._require_auth()
                 break
             body = response.json()
             contacts.extend(body.get("value", []))
@@ -58,6 +66,7 @@ class GraphContactsClient:
         """Create a new contact and return its Graph contact id."""
         result = self._account.con.post(_CONTACTS_URL, data=fields)
         if not result:
+            self._require_auth()
             _LOGGER.error("Failed to create Graph contact")
             return ""
         contact_id = str(result.get("id", ""))
@@ -66,10 +75,18 @@ class GraphContactsClient:
 
     def update_contact(self, contact_id: str, fields: dict[str, Any]) -> None:
         """Update an existing contact in place."""
-        self._account.con.patch(f"{_CONTACTS_URL}/{contact_id}", data=fields)
+        result = self._account.con.patch(f"{_CONTACTS_URL}/{contact_id}", data=fields)
+        if not result:
+            self._require_auth()
         _LOGGER.debug("Updated Graph contact: %s", contact_id)
 
     def delete_contact(self, contact_id: str) -> None:
         """Delete a contact by its Graph id."""
-        self._account.con.delete(f"{_CONTACTS_URL}/{contact_id}")
+        result = self._account.con.delete(f"{_CONTACTS_URL}/{contact_id}")
+        if not result:
+            self._require_auth()
         _LOGGER.debug("Deleted Graph contact: %s", contact_id)
+
+
+class MSAuthError(Exception):
+    """Raised when Microsoft credentials are invalid or expired."""
