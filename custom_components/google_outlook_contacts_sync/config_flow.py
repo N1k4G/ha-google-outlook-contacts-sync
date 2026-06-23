@@ -104,7 +104,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """Re-authorize Microsoft when the stored token is invalid or expired."""
+        """Re-authorize Google when the stored token is invalid or expired."""
         entry_id = self.context.get("entry_id", "")
         reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
         if reauth_entry is None:
@@ -113,10 +113,21 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         config_data = reauth_entry.data
         self._ms_client_id = config_data.get(CONF_MS_CLIENT_ID, "")
         self._ms_client_secret = config_data.get(CONF_MS_CLIENT_SECRET, "")
+        self._ms_token = dict(config_data.get("ms_token") or {})
         self._google_client_id = config_data.get(CONF_GOOGLE_CLIENT_ID, "")
         self._google_client_secret = config_data.get(CONF_GOOGLE_CLIENT_SECRET, "")
-        self._google_token = dict(config_data.get("google_token") or {})
-        return await self.async_step_ms_auth_url()
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm before launching the Google re-authorization flow."""
+        if user_input is not None:
+            return await self.async_step_google_auth_url()
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({}),
+        )
 
     async def async_step_ms_credentials(
         self, user_input: dict[str, Any] | None = None

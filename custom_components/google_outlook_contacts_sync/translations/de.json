@@ -24,6 +24,10 @@
       "google_auth_url": {
         "title": "Google-Konto — Autorisierung",
         "description": "Ein Browserfenster öffnet sich, damit du dich mit deinem Google-Konto anmelden und den Kontaktzugriff genehmigen kannst. Nach der Autorisierung wirst du automatisch zu Home Assistant weitergeleitet."
+      },
+      "reauth_confirm": {
+        "title": "Google-Konto erneut autorisieren",
+        "description": "Deine Google-Autorisierung ist abgelaufen oder wurde widerrufen. Klicke auf Absenden, um dich erneut mit deinem Google-Konto anzumelden und die Kontaktsynchronisierung wiederherzustellen."
       }
     },
     "error": {
