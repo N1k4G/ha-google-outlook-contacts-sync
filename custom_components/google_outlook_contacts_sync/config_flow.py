@@ -33,6 +33,7 @@ from .const import (
     CONF_SYNC_INTERVAL_HOURS,
     DATA_GOOGLE_OAUTH_FLOWS,
     DATA_MS_OAUTH_FLOWS,
+    DATA_REAUTH_PROVIDER,
     DEFAULT_AUTO_REMOVE_DUPLICATES,
     DEFAULT_DELETE_REMOVED,
     DEFAULT_SYNC_INTERVAL_HOURS,
@@ -104,7 +105,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """Re-authorize Google when the stored token is invalid or expired."""
+        """Re-authorize the provider whose token is invalid or expired."""
         entry_id = self.context.get("entry_id", "")
         reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
         if reauth_entry is None:
@@ -116,6 +117,15 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         self._ms_token = dict(config_data.get("ms_token") or {})
         self._google_client_id = config_data.get(CONF_GOOGLE_CLIENT_ID, "")
         self._google_client_secret = config_data.get(CONF_GOOGLE_CLIENT_SECRET, "")
+        self._google_token = dict(config_data.get("google_token") or {})
+
+        failed_provider = (
+            self.hass.data.get(DOMAIN, {})
+            .get(DATA_REAUTH_PROVIDER, {})
+            .get(entry_id, "google")
+        )
+        if failed_provider == "ms":
+            return await self.async_step_ms_auth_url()
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(

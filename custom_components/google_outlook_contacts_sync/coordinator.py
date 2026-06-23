@@ -10,9 +10,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_SYNC_INTERVAL_HOURS, DEFAULT_SYNC_INTERVAL_HOURS
+from .const import (
+    CONF_SYNC_INTERVAL_HOURS,
+    DATA_REAUTH_PROVIDER,
+    DEFAULT_SYNC_INTERVAL_HOURS,
+    DOMAIN,
+)
 from .sync.engine import SyncEngine, SyncPlan, SyncResult
 from .sync.google_client import GoogleAuthError
+from .sync.graph_client import MSAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,15 +41,24 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
             _LOGGER,
             name=f"google_outlook_contacts_sync ({entry.entry_id})",
             update_interval=timedelta(hours=interval_hours),
+            config_entry=entry,
         )
+        self._entry = entry
         self._engine = engine
+
+    def _store_reauth_provider(self, exc: Exception) -> None:
+        provider = "google" if isinstance(exc, GoogleAuthError) else "ms"
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            DATA_REAUTH_PROVIDER, {}
+        )[self._entry.entry_id] = provider
 
     async def _async_update_data(self) -> SyncResult:
         """Fetch the latest data — called by the coordinator on schedule."""
         try:
             return await self._engine.async_sync()
-        except GoogleAuthError as exc:
-            raise ConfigEntryAuthFailed(f"Google authentication failed: {exc}") from exc
+        except (GoogleAuthError, MSAuthError) as exc:
+            self._store_reauth_provider(exc)
+            raise ConfigEntryAuthFailed(str(exc)) from exc
         except Exception as exc:
             raise UpdateFailed(f"Sync failed: {exc}") from exc
 
@@ -51,8 +66,12 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
         """Run a full reconciliation and publish the result to entities."""
         try:
             result = await self._engine.async_full_sync()
-        except GoogleAuthError as exc:
-            raise ConfigEntryAuthFailed(f"Google authentication failed: {exc}") from exc
+        except (GoogleAuthError, MSAuthError) as exc:
+            self._store_reauth_provider(exc)
+            self.async_set_update_error(UpdateFailed(str(exc)))
+            if hasattr(self._entry, "async_start_reauth"):
+                self._entry.async_start_reauth(self.hass)
+            return
         except Exception as exc:
             self.async_set_update_error(UpdateFailed(f"Full resync failed: {exc}"))
             return

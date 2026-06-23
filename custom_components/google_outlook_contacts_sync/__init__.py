@@ -20,6 +20,7 @@ from .const import (
     CONF_MS_CLIENT_SECRET,
     DATA_COORDINATOR,
     DATA_DRY_RUN_COORDINATOR,
+    DATA_REAUTH_PROVIDER,
     DATA_STORE,
     DEFAULT_AUTO_REMOVE_DUPLICATES,
     DEFAULT_DELETE_REMOVED,
@@ -71,6 +72,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     if not await hass.async_add_executor_job(lambda: account.is_authenticated):
+        hass.data.setdefault(DOMAIN, {}).setdefault(DATA_REAUTH_PROVIDER, {})[
+            entry.entry_id
+        ] = "ms"
         raise ConfigEntryAuthFailed(
             "Microsoft account is not authenticated. Please re-authorize."
         )
