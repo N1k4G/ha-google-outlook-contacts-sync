@@ -72,7 +72,11 @@ class GoogleContactsClient:
             try:
                 response: dict[str, Any] = people_resource.list(**kwargs).execute()
             except HttpError as exc:
-                if exc.resp.status == 410:
+                is_expired_token = exc.resp.status == 410 or (
+                    exc.resp.status == 400
+                    and b"EXPIRED_SYNC_TOKEN" in (exc.content or b"")
+                )
+                if is_expired_token:
                     raise SyncTokenExpiredError(
                         "Google sync token has expired; full re-sync required."
                     ) from exc
