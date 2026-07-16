@@ -12,11 +12,13 @@ from .const import STORAGE_KEY_MAPPING, STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
 
-_DEFAULT_DATA: dict[str, Any] = {
-    "mapping": {},       # google_resource_name → graph_contact_id
-    "hashes": {},        # google_resource_name → contact_hash
-    "sync_token": None,  # Google People API syncToken
-}
+def _default_data() -> dict[str, Any]:
+    """Return a fresh default data dict (avoid shared mutable defaults)."""
+    return {
+        "mapping": {},
+        "hashes": {},
+        "sync_token": None,
+    }
 
 
 class ContactSyncStore:
@@ -29,13 +31,13 @@ class ContactSyncStore:
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, STORAGE_KEY_MAPPING
         )
-        self._data: dict[str, Any] = dict(_DEFAULT_DATA)
+        self._data: dict[str, Any] = _default_data()
 
     async def async_load(self) -> None:
         """Load persisted data from storage (call once at setup)."""
         stored = await self._store.async_load()
         if stored:
-            self._data = {**_DEFAULT_DATA, **stored}
+            self._data = {**_default_data(), **stored}
             _LOGGER.debug(
                 "Loaded %d contact mappings from storage",
                 len(self._data["mapping"]),
