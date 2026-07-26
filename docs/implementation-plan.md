@@ -1,28 +1,46 @@
 # Implementation plan — open issue backlog (#6–#33)
 
-Branch: `feat/sync-reliability-backlog`
+Branch: `feat/sync-reliability-backlog` → **one PR**, 9 ordered commit stages.
 
-28 open issues, grouped into 9 sequential PRs. Ordering is driven by real code
-dependencies, not by issue number. Each PR is independently mergeable and leaves
-`main` green.
+28 open issues delivered as a single pull request. The staging below is not a
+PR split — it is the commit order inside this branch. Each stage must leave the
+test suite green on its own so a regression can still be bisected to a stage.
+
+**Do not squash on merge.** Squashing collapses nine independently-verified
+stages into one commit and throws away the only bisection handle this PR has.
 
 Working-tree note: the CI workflow files already carry uncommitted
-`actions/checkout@v4 → v6` / `setup-python@v5 → v6` bumps. They ride along with
-this branch and land in PR 9, which touches the same files.
+`actions/checkout@v4 → v6` / `setup-python@v5 → v6` bumps. They ride along and
+land in stage 9, which touches the same files.
+
+---
+
+## Review guidance for a PR this size
+
+This PR touches nearly every file in the integration. Two stages are
+destructive-path changes and deserve the bulk of review attention:
+
+- **Stage 5** (#25, #30, #18) — rewrites which existing Outlook contact a Google
+  contact adopts, and adds orphan deletion. A bug here overwrites or deletes
+  contacts the user never wanted touched.
+- **Stage 6** (#27, #31b) — the auto-dedup delete path.
+
+Everything else is either additive, corrective, or docs. Review stages 5 and 6
+commit-by-commit; the rest can be reviewed as a diff.
 
 ---
 
 ## Dependency graph (why this order)
 
 ```
-PR1 graph client (#6 #10 #26)  ──┐
-PR2 store (#28, #31a)          ──┤
-PR3 mapping (#29 #32 #24 #9)   ──┼──> PR5 full-resync reconciliation (#25 #30 #18)
-PR4 engine lock + cursor (#8 #33 #14) ┘        │
-                                               ├──> PR6 dedup safety (#27 #31b)
-                                               └──> PR7 lifecycle (#16 #17 #19 #20 #7)
-PR8 metadata/docs (#11 #21 #15 #12 #23)   (independent)
-PR9 tests + CI gate (#22)                 (last — needs all the above)
+S1 graph client (#6 #10 #26)  ──┐
+S2 store (#28, #31a)          ──┤
+S3 mapping (#29 #32 #24 #9)   ──┼──> S5 full-resync reconciliation (#25 #30 #18)
+S4 engine lock + cursor (#8 #33 #14) ┘        │
+                                              ├──> S6 dedup safety (#27 #31b)
+                                              └──> S7 lifecycle (#16 #17 #19 #20 #7)
+S8 metadata/docs (#11 #21 #15 #12 #23)   (independent — can land any time)
+S9 tests + CI gate (#22)                 (last — measures everything above)
 ```
 
 Hard couplings found while reading the code:
@@ -35,18 +53,19 @@ Hard couplings found while reading the code:
 | #8 + #33 | #33 needs `_async_full_sync_unlocked()`, which only exists after #8 splits public/private methods. Doing #33 first would deadlock the non-reentrant lock. |
 | #25 + #30 | Both consume the single full Outlook listing. #30 needs `all_contact_ids` from the same snapshot #25 builds the adoption index from. |
 | #19 → #25, #8 | The initial background run routes into full-resync; it must not run against name-only adoption or race a user button press. |
-| #31 | Splits across two layers: the `save_mapping()` invariant belongs in PR2, the dedup group guard in PR6. |
+| #31 | Splits across two layers: the `save_mapping()` invariant belongs in stage 2, the dedup group guard in stage 6. |
 
 ---
 
-## PR 1 — Graph client hardening (#6, #10, #26)
+## Stage 1 — Graph client hardening (#6, #10, #26)
 
 **Files:** `sync/graph_client.py`, `tests/test_graph_client.py` (new)
 
 `create_contact` currently calls `.get()` on a `requests.Response`
 ([graph_client.py:72](../custom_components/google_outlook_contacts_sync/sync/graph_client.py#L72)),
 so every create raises `AttributeError`, is swallowed by `_process`, and blocks
-the sync token forever. This is the highest-impact bug in the backlog.
+the sync token forever. This is the highest-impact bug in the backlog — it goes
+first so the rest of the branch is built on a client that can actually write.
 
 1. Add `GraphRequestError(Exception)` — the single non-auth Graph failure class
    shared by #10 and #26.
@@ -59,6 +78,9 @@ the sync token forever. This is the highest-impact bug in the backlog.
 5. `list_contacts_raw`: replace the `break` with `_raise_request_failure`; never
    return a partial page set. Raise on non-dict JSON body, on `.json()` throwing,
    and when `value` is not a list.
+6. **#13 lifted forward from stage 9:** `html.escape()` in `_error_page`, and
+   defensively in `_success_page`. Two lines, unauthenticated endpoint, no reason
+   to make it wait for the test stage. Its regression test still lands in stage 9.
 
 **Tests:** response-shaped mocks with `.json()` only — a `MagicMock` that answers
 both `.get()` and `.json()` would hide the original #6 bug. Cover: POST with id,
@@ -66,13 +88,9 @@ POST without id, failed POST/PATCH/DELETE, paging over `@odata.nextLink` (second
 request must not re-send `$select`/`$top`), failure on page 1 and page 2, auth
 invalid vs. auth valid, invalid JSON body.
 
-**Watch for:** `engine._apply` already counts per-contact exceptions via
-`_process`, so no engine change is needed beyond confirming no mapping is saved
-when create raises.
-
 ---
 
-## PR 2 — Store integrity (#28, #31 store half)
+## Stage 2 — Store integrity (#28, #31 store half)
 
 **Files:** `store.py`, `tests/test_store.py` (new)
 
@@ -89,7 +107,7 @@ so every store instance in a process shares the same `mapping`/`hashes` objects.
 4. `save_mapping()` raises `MappingConflictError` when `contact_id` is already
    mapped to a *different* `resource_name`. Re-saving the same pair stays legal.
 5. Add `async_remove()` thin wrapper over `Store.async_remove()` — consumed by
-   #18 in PR 5.
+   #18 in stage 5.
 
 **Tests:** two fresh stores are independent; a later-created store inherits
 nothing; hashes isolated; loaded data not aliased to the mock dict; save writes
@@ -98,7 +116,7 @@ allowed; existing many-to-one conflict detectable.
 
 ---
 
-## PR 3 — Mapping correctness (#29, #32, #24, #9)
+## Stage 3 — Mapping correctness (#29, #32, #24, #9)
 
 **Files:** `sync/mapping.py`, `sync/dedup.py`, `sync/engine.py`,
 `tests/test_mapping.py`, `tests/test_engine.py`
@@ -142,7 +160,7 @@ property, comment why, and cover it with a test — do not fall back to omitting
 
 ---
 
-## PR 4 — Engine concurrency + cursor state machine (#8, #33, #14)
+## Stage 4 — Engine concurrency + cursor state machine (#8, #33, #14)
 
 **Files:** `sync/engine.py`, `tests/test_engine.py`
 
@@ -177,16 +195,19 @@ old token; no deadlock when `async_sync` routes into the full pipeline.
 
 ---
 
-## PR 5 — Full-resync reconciliation (#25, #30, #18)
+## Stage 5 — Full-resync reconciliation (#25, #30, #18) ⚠️ destructive
 
 **Files:** `sync/engine.py`, `sync/dedup.py`, `store.py`, `__init__.py`,
 `README.md`, `tests/test_engine.py`
 
-The most data-destructive area. Adoption currently claims the first Outlook
-contact with a matching normalized name
+The most data-destructive area in the branch. Adoption currently claims the first
+Outlook contact with a matching normalized name
 ([engine.py:445](../custom_components/google_outlook_contacts_sync/sync/engine.py#L445)),
 so an unrelated same-name contact gets overwritten with Google data on every
 full resync.
+
+Split this stage into at least three commits (adoption, stale-ID repair, orphan
+reconciliation) so a regression in one does not require reverting all three.
 
 1. Replace `_build_adopt_index()` with a single `OutlookSnapshot` built from one
    Graph listing, exposing both `all_contact_ids: set[str]` and an email-keyed
@@ -211,7 +232,7 @@ full resync.
    does not increment `deleted`.
 5. Orphan reconciliation runs **only** after a fully successful Google fetch, and
    mapping deletions run **only** against a fully successful Outlook snapshot.
-   PR 1 guarantees a partial listing can no longer masquerade as success.
+   Stage 1 guarantees a partial listing can no longer masquerade as success.
 6. Add `async_remove_entry()` to delete the store file on entry removal.
    `async_unload_entry()` must keep the data — reload and restart depend on it.
 7. README: replace "adopts existing Outlook contacts by name" with the unique-email
@@ -224,7 +245,7 @@ removed before a failed CREATE stays removed.
 
 ---
 
-## PR 6 — Dedup safety and error handling (#27, #31 dedup half)
+## Stage 6 — Dedup safety and error handling (#27, #31 dedup half) ⚠️ destructive
 
 **Files:** `sync/engine.py`, `tests/test_engine.py`, `tests/test_dedup.py`,
 `README.md`
@@ -247,7 +268,7 @@ removed before a failed CREATE stays removed.
 
 ---
 
-## PR 7 — Config entry lifecycle (#16, #17, #19, #20, #7)
+## Stage 7 — Config entry lifecycle (#16, #17, #19, #20, #7)
 
 **Files:** `__init__.py`, `coordinator.py`, `config_flow.py`,
 `sync/google_client.py`, `const.py`, tests
@@ -276,8 +297,8 @@ removed before a failed CREATE stays removed.
    `entry.data`, writing **one** `async_update_entry` when either changed, and
    nothing when neither did. Run it in a `finally` around every engine run
    (delta, full, dry-run — a dry run can still refresh Google credentials), inside
-   the PR 4 lock boundary. A persistence failure must never mask the original sync
-   or auth error; log it separately.
+   the stage 4 lock boundary. A persistence failure must never mask the original
+   sync or auth error; log it separately.
 6. **Reload decoupling:** store `DATA_OPTIONS_SNAPSHOT = dict(entry.options)` at
    setup; the update listener compares the snapshot and returns without reloading
    when options are unchanged. Without this, token persistence triggers a reload,
@@ -293,15 +314,18 @@ run; services gone after unload; views registered once across repeated flow star
 
 ---
 
-## PR 8 — Metadata, translations, docs (#11, #21, #15, #12, #23)
+## Stage 8 — Metadata, translations, docs (#11, #21, #15, #12, #23)
 
 **Files:** `hacs.json`, `manifest.json`, `strings.json`, `translations/*.json`,
 `README.md`, `store.py`
 
+Independent of every other stage — land it early if the branch needs an easy
+green commit.
+
 1. **#11:** raise `hacs.json` `homeassistant` to `2024.12.0`. The code already
    requires `ConfigFlowResult` (2024.4), `DataUpdateCoordinator(config_entry=...)`
-   (~2024.11/12), and PR 7 adds `single_config_entry` (2024.11). Today HACS would
-   happily install onto 2024.1 and fail at import. Document the floor in
+   (~2024.11/12), and stage 8 adds `single_config_entry` (2024.11). Today HACS
+   would happily install onto 2024.1 and fail at import. Document the floor in
    README + CHANGELOG.
 2. **#21:** drop `"quality_scale": "custom"` (not a valid HA value) and add
    `"single_config_entry": true`. Keep the manual `_async_current_entries()` check
@@ -322,14 +346,16 @@ run; services gone after unload; views registered once across repeated flow star
 
 ---
 
-## PR 9 — Test coverage and CI gate (#22)
+## Stage 9 — Test coverage and CI gate (#22)
 
-**Files:** `tests/` (new files), `.github/workflows/test.yaml`,
+**Files:** `tests/` (new files), `.github/workflows/lint.yaml`,
 `requirements_test.txt`, `pyproject.toml`
 
-Correction to the issue text: `lint.yaml` **already** runs `ruff` (via
-`astral-sh/ruff-action`) and `mypy` on push and PR. The genuine gaps are
-`ruff format --check`, unpinned tool versions, and the coverage floor.
+**Correction to the issue text** (worth posting as a comment on #22, but the
+issue stays open — the rest of it is unbuilt): `lint.yaml` **already** runs
+`ruff` (via `astral-sh/ruff-action`) and `mypy` on push and PR. The genuine gaps
+are `ruff format --check`, unpinned tool versions, the coverage floor, and the
+complete absence of tests for four modules.
 
 1. Add `ruff format --check .` to `lint.yaml` rather than duplicating ruff/mypy
    into `test.yaml`. Pin `ruff` and `mypy` with version bounds in
@@ -341,37 +367,36 @@ Correction to the issue text: `lint.yaml` **already** runs `ruff` (via
    `RefreshError` → `GoogleAuthError`, token serialization after refresh.
 3. New `tests/test_http.py`: valid state resumes the flow, unknown/missing state →
    400, state consumed once (replay fails), OAuth error path, HTML escaping
-   (**#13** — `html.escape()` in `_error_page`, defensively in `_success_page`;
-   both views are unauthenticated with `requires_auth = False`, so
-   `error_description` is reflected XSS today), both success paths.
-4. Fill remaining lifecycle gaps not already covered by PRs 1–8.
+   (regression test for the **#13** fix shipped in stage 1 — both views are
+   unauthenticated with `requires_auth = False`, so `error_description` is
+   reflected XSS today), both success paths.
+4. Fill remaining lifecycle gaps not already covered by stages 1–8.
 5. Raise `fail_under` from 50 → **80** only after measuring actual coverage with
-   the new tests in place.
-
-> **#13 is folded into this PR** because its regression test is the `test_http.py`
-> deliverable. If the XSS fix should ship sooner, lift the two-line
-> `html.escape()` change into PR 1 and leave the test here.
+   the new tests in place. This is the last commit on the branch.
 
 ---
 
 ## Summary
 
-| PR | Issues | Risk | Notes |
+| Stage | Issues | Risk | Notes |
 |---|---|---|---|
-| 1 | #6, #10, #26 | Low | Unblocks contact creation entirely — ship first |
-| 2 | #28, #31a | Low | Foundation for PR 5/6 |
+| 1 | #6, #10, #26, #13 | Low | Unblocks contact creation entirely — must be first |
+| 2 | #28, #31a | Low | Foundation for stages 5/6 |
 | 3 | #29, #32, #24, #9 | Medium | One-time re-PATCH of all contacts after upgrade |
 | 4 | #8, #33, #14 | Medium | Structural split of the engine |
-| 5 | #25, #30, #18 | **High** | Touches destructive adoption/delete paths |
-| 6 | #27, #31b | Medium | Destructive dedup path |
+| 5 | #25, #30, #18 | **High** | Destructive adoption/delete paths — split into ≥3 commits |
+| 6 | #27, #31b | **High** | Destructive dedup path |
 | 7 | #16, #17, #19, #20, #7 | Medium | Reload-loop risk if options/data are not separated |
-| 8 | #11, #21, #15, #12, #23 | Low | Docs/metadata only |
-| 9 | #22 (+#13) | Low | Coverage gate goes to 80 % last |
+| 8 | #11, #21, #15, #12, #23 | Low | Docs/metadata only, order-independent |
+| 9 | #22 | Low | Coverage gate goes to 80 % last |
+
+All 28 issues close with this PR. Reference them in the PR body as
+`Closes #6, Closes #7, …` so GitHub closes them on merge.
 
 Open questions to settle during implementation, not before:
 
-- Does Graph accept `null` for every managed property being cleared (PR 3)?
+- Does Graph accept `null` for every managed property being cleared (stage 3)?
 - Should `sync_now` keep `async_refresh()` semantics for users who script it, or
-  move to `async_request_refresh()` as #17 asks (PR 7)? The issue is explicit, so
-  the plan follows it, but it does change debounce behaviour for existing
+  move to `async_request_refresh()` as #17 asks (stage 7)? The issue is explicit,
+  so the plan follows it, but it does change debounce behaviour for existing
   automations.
