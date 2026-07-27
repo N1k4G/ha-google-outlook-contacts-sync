@@ -18,6 +18,7 @@ from .dedup import (
     OutlookContact,
     choose_keeper,
     find_duplicate_groups,
+    normalize_email,
 )
 from .google_client import GoogleContactsClient, SyncTokenExpiredError
 from .graph_client import GraphContactsClient, MSAuthError
@@ -38,6 +39,68 @@ class SyncAction(StrEnum):
     UPDATE = "update"
     DELETE = "delete"
     SKIP = "skip"
+
+
+@dataclass
+class OutlookSnapshot:
+    """One complete listing of Outlook contacts, taken by a full resync.
+
+    Serves two purposes from a single Graph call: deciding which existing
+    Outlook contact an unmapped Google contact may adopt, and telling whether a
+    contact id we still have mapped exists at all.
+    """
+
+    all_contact_ids: set[str]
+    unclaimed_by_email: dict[str, set[str]]
+
+    @classmethod
+    def build(
+        cls, contacts: list[OutlookContact], mapped_ids: set[str]
+    ) -> OutlookSnapshot:
+        by_email: dict[str, set[str]] = {}
+        for contact in contacts:
+            if not contact.contact_id or contact.contact_id in mapped_ids:
+                # Already owned by another Google contact — never a candidate.
+                continue
+            for email in contact.emails:
+                by_email.setdefault(email, set()).add(contact.contact_id)
+        return cls(
+            all_contact_ids={c.contact_id for c in contacts if c.contact_id},
+            unclaimed_by_email=by_email,
+        )
+
+    def claim_unique(self, emails: set[str], display_name: str) -> str | None:
+        """Claim the one unmapped Outlook contact sharing an email, if unambiguous.
+
+        Matching on name was the previous rule and is deliberately gone: two
+        different people who share a name are common, and adopting on that basis
+        overwrites a stranger's contact with someone else's data.
+        """
+        if not emails:
+            return None
+
+        candidates: set[str] = set()
+        for email in emails:
+            candidates |= self.unclaimed_by_email.get(email, set())
+
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            _LOGGER.warning(
+                "Not adopting an existing Outlook contact for %r: %d unmapped "
+                "contacts share its email address(es); creating a new contact "
+                "instead",
+                display_name,
+                len(candidates),
+            )
+            return None
+
+        claimed = candidates.pop()
+        # Drop it from every email key, not just the one that matched, so it can
+        # never be claimed a second time in this run.
+        for ids in self.unclaimed_by_email.values():
+            ids.discard(claimed)
+        return claimed
 
 
 @dataclass
@@ -226,11 +289,11 @@ class SyncEngine:
 
         people, new_sync_token = await self._fetch_people(None)
 
-        adopt_index = await self._build_adopt_index()
+        snapshot = await self._build_snapshot()
 
         for person in people:
             await self._process(
-                self._decide(person, adopt_index, force=True), person, result
+                self._decide(person, snapshot, force=True), person, result
             )
 
         if self._auto_remove_duplicates:
@@ -323,30 +386,29 @@ class SyncEngine:
         result.finished_at = dt_util.utcnow()
         result.duration_seconds = (result.finished_at - started).total_seconds()
 
-    async def _build_adopt_index(self) -> dict[str, list[str]]:
-        """Map name key → unclaimed Outlook contact ids, for full-sync adoption."""
+    async def _build_snapshot(self) -> OutlookSnapshot:
+        """Load every Outlook contact once, for adoption and existence checks.
+
+        A failure here propagates: acting on a partial listing would create
+        duplicates for contacts that merely failed to load.
+        """
         raw = await self._hass.async_add_executor_job(
             self._graph.list_contacts_raw, SELECT_FIELDS
         )
-        index: dict[str, list[str]] = {}
-        for item in raw:
-            contact = OutlookContact.from_graph(item)
-            key = contact.name_key()
-            if key and contact.contact_id not in self._store.mapped_ids():
-                index.setdefault(key, []).append(contact.contact_id)
-        return index
+        contacts = [OutlookContact.from_graph(item) for item in raw]
+        return OutlookSnapshot.build(contacts, self._store.mapped_ids())
 
     def _decide(
         self,
         person: dict[str, Any],
-        adopt_index: dict[str, list[str]] | None = None,
+        snapshot: OutlookSnapshot | None = None,
         force: bool = False,
     ) -> _Decision:
         """Determine the action for one person without performing it.
 
-        When *adopt_index* is provided (full sync), an unmapped Google contact
-        whose name matches an existing Outlook contact adopts that contact
-        instead of creating a new one — preventing duplicates.
+        When *snapshot* is provided (full resync), an unmapped Google contact
+        may adopt an existing Outlook contact instead of creating a duplicate —
+        but only on an unambiguous email match, never on name alone.
 
         When *force* is True the stored hash is ignored and existing contacts
         are always updated.  Used by full resync to recover from cases where
@@ -376,8 +438,10 @@ class SyncEngine:
         # last value of a field still registers as a change.
         current_hash = contact_hash(update_contact)
 
-        if existing_id is None and adopt_index is not None:
-            existing_id = _claim_adopt(adopt_index, display_name)
+        if existing_id is None and snapshot is not None:
+            existing_id = snapshot.claim_unique(
+                _emails_of(create_contact), display_name
+            )
 
         if existing_id is None:
             if not create_contact:
@@ -494,13 +558,14 @@ class SyncEngine:
                 )
 
 
-def _claim_adopt(adopt_index: dict[str, list[str]], display_name: str) -> str | None:
-    """Pop and return an unclaimed Outlook contact id matching the name."""
-    key = " ".join(display_name.split()).casefold()
-    candidates = adopt_index.get(key)
-    if candidates:
-        return candidates.pop(0)
-    return None
+def _emails_of(graph_contact: dict[str, Any]) -> set[str]:
+    """Normalized email addresses of a mapped Graph contact body."""
+    entries = graph_contact.get("emailAddresses") or []
+    return {
+        normalized
+        for entry in entries
+        if (normalized := normalize_email(str(entry.get("address") or "")))
+    }
 
 
 def _display_name(graph_contact: dict[str, Any] | None, resource_name: str) -> str:

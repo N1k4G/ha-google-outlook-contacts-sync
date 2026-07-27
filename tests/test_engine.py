@@ -529,24 +529,157 @@ class TestSyncTokenOnFailure:
 
 class TestFullSync:
     @pytest.mark.asyncio
-    async def test_adopts_existing_outlook_contact_by_name(
+    async def test_adopts_on_unique_email_match(
         self, hass: MagicMock, simple_person: dict[str, Any]
     ) -> None:
-        # Google "Alice Smith" is unmapped; an Outlook "Alice Smith" exists.
+        """Case matters neither way — comparison is strip()+casefold()."""
         engine, _, graph, store = _make_engine(
             hass,
             [simple_person],
-            outlook_raw=[{"id": "outlook-9", "displayName": "Alice Smith"}],
+            outlook_raw=[
+                {
+                    "id": "outlook-9",
+                    "displayName": "Completely Different Name",
+                    "emailAddresses": [{"address": "  ALICE@example.com "}],
+                }
+            ],
         )
 
         result = await engine.async_full_sync()
 
-        # Adopted, not created: update the existing Outlook contact.
         graph.create_contact.assert_not_called()
         graph.update_contact.assert_called_once_with("outlook-9", ANY)
-        assert result.created == 0
         assert result.updated == 1
         store.save_mapping.assert_called_once_with("people/c123", "outlook-9", ANY)
+
+    @pytest.mark.asyncio
+    async def test_same_name_different_email_is_not_adopted(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """Regression for #25: name-only adoption overwrote unrelated people."""
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [simple_person],
+            outlook_raw=[
+                {
+                    "id": "outlook-9",
+                    "displayName": "Alice Smith",
+                    "emailAddresses": [{"address": "other.alice@example.com"}],
+                }
+            ],
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.update_contact.assert_not_called()
+        graph.create_contact.assert_called_once()
+        assert result.created == 1
+
+    @pytest.mark.asyncio
+    async def test_same_name_but_google_has_no_email_is_not_adopted(
+        self, hass: MagicMock
+    ) -> None:
+        person = {
+            "resourceName": "people/c123",
+            "names": [{"displayName": "Alice Smith"}],
+        }
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [person],
+            outlook_raw=[
+                {
+                    "id": "outlook-9",
+                    "displayName": "Alice Smith",
+                    "emailAddresses": [{"address": "alice@example.com"}],
+                }
+            ],
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.update_contact.assert_not_called()
+        assert result.created == 1
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_email_is_not_adopted(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [simple_person],
+            outlook_raw=[
+                {
+                    "id": "outlook-1",
+                    "emailAddresses": [{"address": "alice@example.com"}],
+                },
+                {
+                    "id": "outlook-2",
+                    "emailAddresses": [{"address": "alice@example.com"}],
+                },
+            ],
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.update_contact.assert_not_called()
+        graph.create_contact.assert_called_once()
+        assert result.created == 1
+
+    @pytest.mark.asyncio
+    async def test_already_mapped_outlook_contact_is_not_a_candidate(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/other": "outlook-9"},
+            outlook_raw=[
+                {
+                    "id": "outlook-9",
+                    "emailAddresses": [{"address": "alice@example.com"}],
+                }
+            ],
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.create_contact.assert_called_once()
+        assert result.created == 1
+
+    @pytest.mark.asyncio
+    async def test_match_on_secondary_email_claims_the_contact_once(
+        self, hass: MagicMock
+    ) -> None:
+        """A claimed id must leave every email bucket, not just the matched one."""
+        first = {
+            "resourceName": "people/c1",
+            "names": [{"displayName": "One"}],
+            "emailAddresses": [{"value": "second@example.com"}],
+        }
+        second = {
+            "resourceName": "people/c2",
+            "names": [{"displayName": "Two"}],
+            "emailAddresses": [{"value": "first@example.com"}],
+        }
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [first, second],
+            outlook_raw=[
+                {
+                    "id": "outlook-9",
+                    "emailAddresses": [
+                        {"address": "first@example.com"},
+                        {"address": "second@example.com"},
+                    ],
+                }
+            ],
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.update_contact.assert_called_once_with("outlook-9", ANY)
+        assert result.updated == 1
+        assert result.created == 1  # the second person gets a fresh contact
 
     @pytest.mark.asyncio
     async def test_creates_when_no_outlook_match(
