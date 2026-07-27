@@ -292,6 +292,7 @@ class SyncEngine:
         snapshot = await self._build_snapshot()
 
         for person in people:
+            self._drop_stale_mapping(person, snapshot)
             await self._process(
                 self._decide(person, snapshot, force=True), person, result
             )
@@ -397,6 +398,31 @@ class SyncEngine:
         )
         contacts = [OutlookContact.from_graph(item) for item in raw]
         return OutlookSnapshot.build(contacts, self._store.mapped_ids())
+
+    def _drop_stale_mapping(
+        self, person: dict[str, Any], snapshot: OutlookSnapshot
+    ) -> None:
+        """Forget a mapping whose Outlook contact no longer exists.
+
+        Without this, a contact the user deleted in Outlook is patched by id on
+        every full resync, fails every time, and is never recreated. Afterwards
+        the Google contact is simply unmapped, so it goes through the normal
+        adoption-or-create path.
+
+        Only safe during a full resync, where the snapshot is a complete and
+        verified listing — a delta sync must not pay for per-contact existence
+        checks, and a partial listing would delete live mappings.
+        """
+        resource_name: str = person.get("resourceName", "")
+        mapped_id = self._store.lookup(resource_name)
+        if mapped_id is not None and mapped_id not in snapshot.all_contact_ids:
+            _LOGGER.warning(
+                "Outlook contact %s mapped to %s no longer exists; unlinking so it "
+                "can be recreated",
+                mapped_id,
+                resource_name,
+            )
+            self._store.delete_mapping(resource_name)
 
     def _decide(
         self,

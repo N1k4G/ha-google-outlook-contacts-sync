@@ -692,6 +692,112 @@ class TestFullSync:
         assert result.created == 1
 
 
+class TestStaleMappingRepair:
+    """#30: a mapped Outlook contact deleted by hand must be recreated."""
+
+    @pytest.mark.asyncio
+    async def test_missing_mapped_id_leads_to_create(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-missing"},
+            outlook_raw=[{"id": "outlook-unrelated"}],
+        )
+
+        result = await engine.async_full_sync()
+
+        store.delete_mapping.assert_any_call("people/c123")
+        graph.update_contact.assert_not_called()
+        graph.create_contact.assert_called_once()
+        store.save_mapping.assert_called_with("people/c123", "graph-id-001", ANY)
+        assert result.created == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_mapped_id_can_adopt_a_unique_match(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-missing"},
+            outlook_raw=[
+                {
+                    "id": "outlook-new",
+                    "emailAddresses": [{"address": "alice@example.com"}],
+                }
+            ],
+        )
+
+        result = await engine.async_full_sync()
+
+        store.delete_mapping.assert_any_call("people/c123")
+        graph.create_contact.assert_not_called()
+        graph.update_contact.assert_called_once_with("outlook-new", ANY)
+        assert result.updated == 1
+
+    @pytest.mark.asyncio
+    async def test_existing_mapped_id_keeps_its_mapping(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-1"},
+            outlook_raw=[{"id": "outlook-1"}],
+        )
+
+        result = await engine.async_full_sync()
+
+        store.delete_mapping.assert_not_called()
+        graph.create_contact.assert_not_called()
+        graph.update_contact.assert_called_once_with("outlook-1", ANY)
+        assert result.updated == 1
+
+    @pytest.mark.asyncio
+    async def test_snapshot_failure_removes_no_mappings(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """A partial listing must never be read as 'these contacts are gone'."""
+        from custom_components.google_outlook_contacts_sync.sync.graph_client import (
+            GraphRequestError,
+        )
+
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-1"},
+        )
+        graph.list_contacts_raw.side_effect = GraphRequestError("listing failed")
+
+        with pytest.raises(GraphRequestError):
+            await engine.async_full_sync()
+
+        store.delete_mapping.assert_not_called()
+        graph.create_contact.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_mapping_stays_removed_when_create_fails(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """A provably dead Outlook id is no use as a retry anchor."""
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-missing"},
+            outlook_raw=[],
+        )
+        graph.create_contact.side_effect = RuntimeError("boom")
+
+        result = await engine.async_full_sync()
+
+        store.delete_mapping.assert_any_call("people/c123")
+        assert store.lookup("people/c123") is None
+        assert result.failed == 1
+        assert result.created == 0
+
+
 class TestDedup:
     @pytest.mark.asyncio
     async def test_removes_duplicate_keeping_most_complete(
