@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     DATA_GOOGLE_OAUTH_FLOWS,
     DATA_MS_OAUTH_FLOWS,
+    DATA_VIEWS_REGISTERED,
     DOMAIN,
     GOOGLE_AUTH_CALLBACK_NAME,
     GOOGLE_AUTH_CALLBACK_PATH,
@@ -23,6 +24,23 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def async_register_callback_views(hass: HomeAssistant) -> None:
+    """Register both OAuth callback views, at most once per HA run.
+
+    Called from async_setup and from the config flow steps, because during
+    first-time setup no config entry exists yet and async_setup has not run.
+    Every register_view call adds another route and handler, so repeated flow
+    attempts used to accumulate duplicates.
+    """
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get(DATA_VIEWS_REGISTERED):
+        return
+
+    hass.http.register_view(MSAuthCallbackView(hass))
+    hass.http.register_view(GoogleAuthCallbackView(hass))
+    domain_data[DATA_VIEWS_REGISTERED] = True
 
 
 class MSAuthCallbackView(HomeAssistantView):

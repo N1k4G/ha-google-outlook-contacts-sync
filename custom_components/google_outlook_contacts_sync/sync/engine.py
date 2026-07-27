@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -214,6 +215,7 @@ class SyncEngine:
         store: ContactSyncStore,
         delete_removed: bool = False,
         auto_remove_duplicates: bool = False,
+        persist_tokens: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._hass = hass
         self._google = google_client
@@ -221,6 +223,7 @@ class SyncEngine:
         self._store = store
         self._delete_removed = delete_removed
         self._auto_remove_duplicates = auto_remove_duplicates
+        self._persist_tokens_cb = persist_tokens
         # Serialises every public run. The scheduled coordinator refresh, the
         # sync/full-sync services, both buttons and the dry run all reach this
         # one engine and the one store; without this they interleave at every
@@ -230,12 +233,18 @@ class SyncEngine:
     async def async_sync(self) -> SyncResult:
         """Delta sync pass: apply changed Google contacts to Outlook."""
         async with self._run_lock:
-            return await self._async_sync_unlocked()
+            try:
+                return await self._async_sync_unlocked()
+            finally:
+                await self._persist_tokens()
 
     async def async_full_sync(self) -> SyncResult:
         """Full reconciliation of every Google contact against Outlook."""
         async with self._run_lock:
-            return await self._async_full_sync_unlocked()
+            try:
+                return await self._async_full_sync_unlocked()
+            finally:
+                await self._persist_tokens()
 
     async def async_plan(self) -> SyncPlan:
         """Compute what a sync would do, without applying or persisting.
@@ -244,7 +253,27 @@ class SyncEngine:
         is being mutated mid-run describes a state that never existed.
         """
         async with self._run_lock:
-            return await self._async_plan_unlocked()
+            try:
+                return await self._async_plan_unlocked()
+            finally:
+                # A dry run writes nothing to Outlook but still talks to Google,
+                # which can refresh the credentials.
+                await self._persist_tokens()
+
+    async def _persist_tokens(self) -> None:
+        """Save refreshed OAuth state, inside the lock, whatever else happened.
+
+        Runs from a finally block: a token renewed early in a run must survive
+        a later contact write failing. Never raises — replacing an in-flight
+        sync or auth error with a storage error would hide the real cause and
+        break the reauth path.
+        """
+        if self._persist_tokens_cb is None:
+            return
+        try:
+            await self._persist_tokens_cb()
+        except Exception:
+            _LOGGER.exception("Failed to persist refreshed OAuth tokens")
 
     # ------------------------------------------------------------------
     # Run implementations — these never take the lock themselves, so they can
