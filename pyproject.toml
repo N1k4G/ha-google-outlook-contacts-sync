@@ -43,4 +43,8 @@ source = ["custom_components/google_outlook_contacts_sync"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
-fail_under = 50
+# Project-wide gate. Individual files may sit lower -- config_flow.py and
+# ms_auth.py are mostly OAuth plumbing that only a live provider exercises --
+# as long as the error paths that lose or corrupt contact data are covered
+# directly. Coverage is a floor, not a substitute for those regression tests.
+fail_under = 80
