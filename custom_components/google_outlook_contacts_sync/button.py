@@ -37,9 +37,7 @@ class SyncNowButton(ButtonEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "sync_now"
 
-    def __init__(
-        self, coordinator: ContactSyncCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: ContactSyncCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_sync_now"
         self._attr_device_info = build_device_info(entry)
@@ -54,9 +52,7 @@ class FullResyncButton(ButtonEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "full_resync"
 
-    def __init__(
-        self, coordinator: ContactSyncCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: ContactSyncCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_full_resync"
         self._attr_device_info = build_device_info(entry)
@@ -71,9 +67,7 @@ class DryRunButton(ButtonEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "run_dry_run"
 
-    def __init__(
-        self, coordinator: DryRunCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: DryRunCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_run_dry_run"
         self._attr_device_info = build_device_info(entry)

@@ -76,9 +76,7 @@ class LastSyncSensor(_BaseSyncSensor):
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    def __init__(
-        self, coordinator: ContactSyncCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: ContactSyncCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "last_sync")
 
     @property
@@ -91,9 +89,7 @@ class LastSyncSensor(_BaseSyncSensor):
 class LastSyncResultSensor(_BaseSyncSensor):
     """Verbose summary of the most recent sync run."""
 
-    def __init__(
-        self, coordinator: ContactSyncCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: ContactSyncCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "last_sync_result")
 
     @property
@@ -124,9 +120,7 @@ class NextSyncSensor(_BaseSyncSensor):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(
-        self, coordinator: ContactSyncCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: ContactSyncCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "next_sync")
 
     @property
@@ -165,9 +159,7 @@ class DuplicatesRemovedSensor(_BaseSyncSensor):
     _attr_native_unit_of_measurement = "contacts"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(
-        self, coordinator: ContactSyncCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: ContactSyncCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "duplicates_removed")
 
     @property
@@ -184,18 +176,14 @@ class DuplicatesRemovedSensor(_BaseSyncSensor):
         return {"groups": data.duplicates}
 
 
-class DryRunPreviewSensor(
-    CoordinatorEntity[DryRunCoordinator], SensorEntity
-):
+class DryRunPreviewSensor(CoordinatorEntity[DryRunCoordinator], SensorEntity):
     """Preview of the contacts the next sync would add/update/delete."""
 
     _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "changes"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(
-        self, coordinator: DryRunCoordinator, entry: ConfigEntry
-    ) -> None:
+    def __init__(self, coordinator: DryRunCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_translation_key = "dry_run_preview"
         self._attr_unique_id = f"{entry.entry_id}_dry_run_preview"
@@ -219,7 +207,5 @@ class DryRunPreviewSensor(
             "create_count": len(plan.to_create),
             "update_count": len(plan.to_update),
             "delete_count": len(plan.to_delete),
-            "computed_at": (
-                plan.finished_at.isoformat() if plan.finished_at else None
-            ),
+            "computed_at": (plan.finished_at.isoformat() if plan.finished_at else None),
         }

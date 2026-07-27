@@ -39,13 +39,18 @@ class TestMicrosoftCallback:
         view = MSAuthCallbackView(hass)
 
         response = await view.get(
-            _request({"state": "state-1", "code": "abc"}, "https://ha.example/cb?code=abc")
+            _request(
+                {"state": "state-1", "code": "abc"}, "https://ha.example/cb?code=abc"
+            )
         )
 
         assert response.status == HTTPStatus.OK
         kwargs = hass.config_entries.flow.async_configure.call_args.kwargs
         assert kwargs["flow_id"] == "flow-1"
-        assert kwargs["user_input"]["authorization_url"] == "https://ha.example/cb?code=abc"
+        assert (
+            kwargs["user_input"]["authorization_url"]
+            == "https://ha.example/cb?code=abc"
+        )
 
     @pytest.mark.asyncio
     async def test_unknown_state_is_rejected(self):
