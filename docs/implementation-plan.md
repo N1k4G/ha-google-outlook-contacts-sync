@@ -1,5 +1,9 @@
 # Implementation plan — open issue backlog (#6–#33)
 
+> **Status: implemented.** All 9 stages are on `feat/sync-reliability-backlog`
+> as 12 commits. This document is kept as the review guide for the PR; the
+> "Deviations" section at the end records where the build differed from the plan.
+
 Branch: `feat/sync-reliability-backlog` → **one PR**, 9 ordered commit stages.
 
 28 open issues delivered as a single pull request. The staging below is not a
@@ -400,3 +404,70 @@ Open questions to settle during implementation, not before:
   move to `async_request_refresh()` as #17 asks (stage 7)? The issue is explicit,
   so the plan follows it, but it does change debounce behaviour for existing
   automations.
+
+
+---
+
+## Deviations from this plan
+
+Recorded during implementation. Nothing was dropped; all 28 issues are closed.
+
+1. **#13 (XSS escaping) moved from stage 9 to stage 1.** Two lines on an
+   unauthenticated endpoint; with everything in one PR there was no reason to
+   hold it behind the test stage. Its regression test still landed in stage 9.
+
+2. **Part of #12 landed in stage 2.** The false "encrypted" claim in the
+   `ContactSyncStore` docstring was corrected while that class was being
+   rewritten. The README half stayed in stage 8.
+
+3. **A prep commit was added before stage 1.** `tests/conftest.py` read JSON
+   fixtures with the platform default encoding, so the suite failed on Windows
+   and passed on Linux CI. Fixed first to make local verification possible.
+
+4. **Stage 9's CI change is smaller than #22 asked for.** The issue says CI only
+   ran pytest; `lint.yaml` already ran ruff and mypy. Duplicating them into
+   `test.yaml` would have added two redundant jobs. What was actually missing —
+   `ruff format --check`, pinned tool versions, a meaningful coverage floor —
+   was added instead. This correction is worth posting as a comment on #22.
+
+5. **Stage 9 gained entity, coordinator and diagnostics tests** not in the
+   original scope. Coverage after the planned work was 73%, short of the 80%
+   gate the issue requires; the coordinator's exception-to-reauth mapping was
+   the largest untested behaviour worth fixing.
+
+6. **The engine test harness changed shape.** `_make_engine` gained
+   `stored_sync_token`, defaulting to a real cursor. After #33, a `None` cursor
+   routes into full reconciliation, so every pre-existing delta test would have
+   silently become a full-sync test.
+
+## Verification performed
+
+Each stage's regression tests were run against the *unfixed* code to confirm
+they fail. Reintroducing:
+
+| Defect | Tests that fail |
+|---|---|
+| `.get()` on the Graph response (#6) | 5 |
+| shallow-copied store defaults (#28) | 3 |
+| sparse-only update payload (#24) | 2 |
+| no engine lock (#8) | 4 |
+| no stale-mapping repair (#30) | 3 |
+| old dedup error handling (#27/#31) | 5 |
+| `html.escape` removed (#13) | 3 |
+| `ms_url_failed` removed from en.json (#15) | 2 |
+
+Final state: 238 tests, 84% coverage, `ruff check`, `ruff format --check` and
+`mypy` clean.
+
+## Known gaps
+
+- **Graph null-clearing is unverified against a live tenant.** #24 sends `None`
+  for managed scalar and address properties being cleared. They are documented
+  as nullable, but this has not been exercised against a real mailbox. Editing
+  one Google contact to remove a phone number would confirm it.
+- **`config_flow.py` (24%) and `auth/ms_auth.py` (35%) remain lightly tested.**
+  Both are OAuth plumbing that only a live provider exercises end to end.
+- **The HA test plugin cannot run on Windows** — `homeassistant.runner` imports
+  `fcntl`. The suite runs with `-p no:homeassistant` locally; CI on Linux runs it
+  unrestricted. Lifecycle tests therefore mock the HA boundary rather than using
+  the `hass` fixture.
