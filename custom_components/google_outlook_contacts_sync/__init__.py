@@ -134,6 +134,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unloaded
 
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the persisted mapping when the integration is removed.
+
+    Only on removal — async_unload_entry must leave the data alone, or every
+    reload and restart would re-adopt or recreate every contact.
+    """
+    store = ContactSyncStore(hass)
+    await store.async_remove()
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the entry when options change so the new interval takes effect."""
     await hass.config_entries.async_reload(entry.entry_id)

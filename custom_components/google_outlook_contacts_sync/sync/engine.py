@@ -38,6 +38,9 @@ class SyncAction(StrEnum):
     CREATE = "create"
     UPDATE = "update"
     DELETE = "delete"
+    # Forget the mapping locally without touching Outlook. Distinct from SKIP,
+    # which must stay genuinely stateless.
+    UNLINK = "unlink"
     SKIP = "skip"
 
 
@@ -289,6 +292,15 @@ class SyncEngine:
 
         people, new_sync_token = await self._fetch_people(None)
 
+        # Captured from the complete fetch before any per-contact work: a Google
+        # contact with no mappable fields is still *present*, and must not be
+        # mistaken for one that was deleted.
+        active_resource_names = {
+            resource_name
+            for person in people
+            if (resource_name := person.get("resourceName"))
+        }
+
         snapshot = await self._build_snapshot()
 
         for person in people:
@@ -296,6 +308,8 @@ class SyncEngine:
             await self._process(
                 self._decide(person, snapshot, force=True), person, result
             )
+
+        await self._reconcile_orphans(active_resource_names, result)
 
         if self._auto_remove_duplicates:
             await self._dedupe(result)
@@ -387,6 +401,45 @@ class SyncEngine:
         result.finished_at = dt_util.utcnow()
         result.duration_seconds = (result.finished_at - started).total_seconds()
 
+    async def _reconcile_orphans(
+        self, active_resource_names: set[str], result: SyncResult
+    ) -> None:
+        """Resolve mappings whose Google contact no longer exists.
+
+        Only valid after a fully successful full fetch: *active_resource_names*
+        must be the complete truth, or live contacts would be treated as
+        deleted. Delta runs never call this — they only ever see a slice.
+        """
+        orphaned = self._store.all_resource_names() - active_resource_names
+        if not orphaned:
+            return
+
+        for resource_name in sorted(orphaned):
+            contact_id = self._store.lookup(resource_name)
+
+            if not self._delete_removed or contact_id is None:
+                # Untrack only; the user opted to keep Outlook contacts.
+                self._store.delete_mapping(resource_name)
+                continue
+
+            try:
+                await self._hass.async_add_executor_job(
+                    self._graph.delete_contact, contact_id
+                )
+            except MSAuthError:
+                raise
+            except Exception as exc:
+                # Keep the mapping so the delete is retried next run.
+                _LOGGER.error(
+                    "Failed to delete orphaned Outlook contact %s: %s", contact_id, exc
+                )
+                result.failed += 1
+                result.errors.append(f"{resource_name}: orphan delete failed: {exc}")
+                continue
+
+            self._store.delete_mapping(resource_name)
+            result.deleted += 1
+
     async def _build_snapshot(self) -> OutlookSnapshot:
         """Load every Outlook contact once, for adoption and existence checks.
 
@@ -445,16 +498,17 @@ class SyncEngine:
         existing_id = self._store.lookup(resource_name)
 
         if is_deleted(person):
-            if existing_id and self._delete_removed:
+            label = _display_name(None, resource_name)
+            if not existing_id:
+                return _Decision(SyncAction.SKIP, resource_name, label)
+            if self._delete_removed:
                 return _Decision(
-                    SyncAction.DELETE,
-                    resource_name,
-                    _display_name(None, resource_name),
-                    existing_id=existing_id,
+                    SyncAction.DELETE, resource_name, label, existing_id=existing_id
                 )
-            return _Decision(
-                SyncAction.SKIP, resource_name, _display_name(None, resource_name)
-            )
+            # Keep the Outlook contact, but stop tracking it: the Google source
+            # is gone, so the mapping and hash can never be meaningful again and
+            # would otherwise be counted as a synced contact forever.
+            return _Decision(SyncAction.UNLINK, resource_name, label)
 
         create_contact = to_graph_contact(person)
         update_contact = to_graph_contact_update(person)
@@ -540,6 +594,13 @@ class SyncEngine:
             )
             self._store.delete_mapping(decision.resource_name)
             result.deleted += 1
+        elif decision.action is SyncAction.UNLINK:
+            _LOGGER.debug(
+                "Untracking %s; Google contact removed and delete_removed is off",
+                decision.resource_name,
+            )
+            self._store.delete_mapping(decision.resource_name)
+            result.skipped += 1
         else:
             result.skipped += 1
 

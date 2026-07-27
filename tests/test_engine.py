@@ -798,6 +798,140 @@ class TestStaleMappingRepair:
         assert result.created == 0
 
 
+class TestOrphanReconciliation:
+    """#18: mappings whose Google contact is gone must not linger."""
+
+    @pytest.mark.asyncio
+    async def test_delta_delete_untracks_when_option_off(self, hass: MagicMock) -> None:
+        deleted = {"resourceName": "people/c999", "metadata": {"deleted": True}}
+        engine, _, graph, store = _make_engine(
+            hass,
+            [deleted],
+            existing_mapping={"people/c999": "graph-del"},
+            delete_removed=False,
+        )
+
+        result = await engine.async_sync()
+
+        graph.delete_contact.assert_not_called()
+        store.delete_mapping.assert_called_once_with("people/c999")
+        assert result.deleted == 0
+
+    @pytest.mark.asyncio
+    async def test_delta_delete_removes_then_untracks_when_option_on(
+        self, hass: MagicMock
+    ) -> None:
+        deleted = {"resourceName": "people/c999", "metadata": {"deleted": True}}
+        engine, _, graph, store = _make_engine(
+            hass,
+            [deleted],
+            existing_mapping={"people/c999": "graph-del"},
+            delete_removed=True,
+        )
+
+        result = await engine.async_sync()
+
+        graph.delete_contact.assert_called_once_with("graph-del")
+        store.delete_mapping.assert_called_once_with("people/c999")
+        assert result.deleted == 1
+
+    @pytest.mark.asyncio
+    async def test_full_resync_orphan_untracked_when_option_off(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-1", "people/old": "graph-old"},
+            outlook_raw=[{"id": "outlook-1"}, {"id": "graph-old"}],
+            delete_removed=False,
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.delete_contact.assert_not_called()
+        store.delete_mapping.assert_any_call("people/old")
+        assert result.deleted == 0
+
+    @pytest.mark.asyncio
+    async def test_full_resync_orphan_deleted_when_option_on(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-1", "people/old": "graph-old"},
+            outlook_raw=[{"id": "outlook-1"}, {"id": "graph-old"}],
+            delete_removed=True,
+        )
+
+        result = await engine.async_full_sync()
+
+        graph.delete_contact.assert_called_once_with("graph-old")
+        store.delete_mapping.assert_any_call("people/old")
+        assert result.deleted == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_orphan_delete_keeps_mapping_for_retry(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-1", "people/old": "graph-old"},
+            outlook_raw=[{"id": "outlook-1"}, {"id": "graph-old"}],
+            delete_removed=True,
+        )
+        graph.delete_contact.side_effect = RuntimeError("boom")
+
+        result = await engine.async_full_sync()
+
+        assert result.failed == 1
+        assert result.deleted == 0
+        assert store.lookup("people/old") == "graph-old"
+        # failed > 0 invalidates the cursor, forcing another full pass.
+        assert store.sync_token is None
+
+    @pytest.mark.asyncio
+    async def test_active_contact_without_mappable_fields_is_not_an_orphan(
+        self, hass: MagicMock
+    ) -> None:
+        """Present but empty is not the same as deleted."""
+        empty = {"resourceName": "people/empty"}
+        engine, _, graph, store = _make_engine(
+            hass,
+            [empty],
+            existing_mapping={"people/empty": "outlook-1"},
+            outlook_raw=[{"id": "outlook-1"}],
+            delete_removed=True,
+        )
+
+        await engine.async_full_sync()
+
+        graph.delete_contact.assert_not_called()
+        assert store.lookup("people/empty") == "outlook-1"
+
+    @pytest.mark.asyncio
+    async def test_auth_error_during_orphan_delete_propagates(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        from custom_components.google_outlook_contacts_sync.sync.graph_client import (
+            MSAuthError,
+        )
+
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/c123": "outlook-1", "people/old": "graph-old"},
+            outlook_raw=[{"id": "outlook-1"}, {"id": "graph-old"}],
+            delete_removed=True,
+        )
+        graph.delete_contact.side_effect = MSAuthError("token gone")
+
+        with pytest.raises(MSAuthError):
+            await engine.async_full_sync()
+
+
 class TestDedup:
     @pytest.mark.asyncio
     async def test_removes_duplicate_keeping_most_complete(
