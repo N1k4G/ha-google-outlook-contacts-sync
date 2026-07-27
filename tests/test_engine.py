@@ -62,9 +62,7 @@ def _make_engine(
 
     store.repoint_mapping.side_effect = _repoint
 
-    hass.async_add_executor_job = AsyncMock(
-        side_effect=lambda fn, *args: fn(*args)
-    )
+    hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
 
     engine = SyncEngine(
         hass=hass,
@@ -129,11 +127,11 @@ class TestSyncEngineUpdate:
     ) -> None:
         from custom_components.google_outlook_contacts_sync.sync.mapping import (
             contact_hash,
-            to_graph_contact,
+            to_graph_contact_update,
         )
 
-        graph_contact = to_graph_contact(simple_person)
-        h = contact_hash(graph_contact)
+        # The engine hashes the authoritative state, not the sparse create body.
+        h = contact_hash(to_graph_contact_update(simple_person))
 
         engine, _, graph, _ = _make_engine(
             hass,
@@ -199,16 +197,12 @@ class TestSyncEngineDelete:
         assert result.deleted == 1
 
     @pytest.mark.asyncio
-    async def test_deleted_person_not_in_mapping_skipped(
-        self, hass: MagicMock
-    ) -> None:
+    async def test_deleted_person_not_in_mapping_skipped(self, hass: MagicMock) -> None:
         deleted_person: dict[str, Any] = {
             "resourceName": "people/c888",
             "metadata": {"deleted": True},
         }
-        engine, _, graph, _ = _make_engine(
-            hass, [deleted_person], delete_removed=True
-        )
+        engine, _, graph, _ = _make_engine(hass, [deleted_person], delete_removed=True)
         result = await engine.async_sync()
 
         graph.delete_contact.assert_not_called()
@@ -234,9 +228,7 @@ class TestSyncEngineErrors:
         assert len(result.errors) == 1
 
     @pytest.mark.asyncio
-    async def test_google_fetch_failure_returns_result(
-        self, hass: MagicMock
-    ) -> None:
+    async def test_google_fetch_failure_returns_result(self, hass: MagicMock) -> None:
         google_client = MagicMock()
         google_client.fetch_contacts.side_effect = ConnectionError("Network down")
         graph_client = MagicMock()
@@ -244,9 +236,7 @@ class TestSyncEngineErrors:
         store.sync_token = None
         store.async_save = AsyncMock()
 
-        hass.async_add_executor_job = AsyncMock(
-            side_effect=lambda fn, *args: fn(*args)
-        )
+        hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
 
         engine = SyncEngine(hass, google_client, graph_client, store)
         result = await engine.async_sync()
@@ -272,9 +262,7 @@ class TestSyncEngineErrors:
         store.get_hash.return_value = None
         store.save_mapping = MagicMock()
 
-        hass.async_add_executor_job = AsyncMock(
-            side_effect=lambda fn, *args: fn(*args)
-        )
+        hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
 
         engine = SyncEngine(hass, google_client, graph_client, store)
         result = await engine.async_sync()
@@ -299,6 +287,112 @@ class TestSyncResult:
         assert "failed" in SyncResult(failed=2).summary()
 
 
+class TestFieldClearing:
+    """Regressions for #24: removing a field in Google must clear it in Outlook."""
+
+    @staticmethod
+    def _person(**extra: Any) -> dict[str, Any]:
+        return {
+            "resourceName": "people/c123",
+            "names": [{"givenName": "Alice", "displayName": "Alice Smith"}],
+            **extra,
+        }
+
+    @pytest.mark.asyncio
+    async def test_removed_field_is_explicitly_cleared(self, hass: MagicMock) -> None:
+        from custom_components.google_outlook_contacts_sync.sync.mapping import (
+            contact_hash,
+            to_graph_contact_update,
+        )
+
+        was = self._person(
+            phoneNumbers=[{"value": "+49 170 1", "type": "mobile"}],
+            birthdays=[
+                {"metadata": {"primary": True}, "date": {"month": 3, "day": 15}}
+            ],
+        )
+        now = self._person()
+
+        engine, _, graph, store = _make_engine(
+            hass,
+            [now],
+            existing_mapping={"people/c123": "graph-1"},
+            existing_hashes={"people/c123": contact_hash(to_graph_contact_update(was))},
+        )
+        result = await engine.async_sync()
+
+        graph.update_contact.assert_called_once()
+        _, body = graph.update_contact.call_args[0]
+        assert body["mobilePhone"] is None
+        assert body["birthday"] is None
+        assert body["homePhones"] == []
+        assert result.updated == 1
+        assert store.get_hash("people/c123") == contact_hash(
+            to_graph_contact_update(now)
+        )
+
+    @pytest.mark.asyncio
+    async def test_second_run_with_stored_hash_skips(self, hass: MagicMock) -> None:
+        from custom_components.google_outlook_contacts_sync.sync.mapping import (
+            contact_hash,
+            to_graph_contact_update,
+        )
+
+        person = self._person()
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [person],
+            existing_mapping={"people/c123": "graph-1"},
+            existing_hashes={
+                "people/c123": contact_hash(to_graph_contact_update(person))
+            },
+        )
+        result = await engine.async_sync()
+
+        graph.update_contact.assert_not_called()
+        assert result.skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_mapped_contact_stripped_of_all_data_still_updates(
+        self, hass: MagicMock
+    ) -> None:
+        """Previously skipped outright, leaving stale Outlook values forever."""
+        emptied = {"resourceName": "people/c123"}
+
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [emptied],
+            existing_mapping={"people/c123": "graph-1"},
+            existing_hashes={"people/c123": "some-old-hash"},
+        )
+        result = await engine.async_sync()
+
+        graph.update_contact.assert_called_once()
+        _, body = graph.update_contact.call_args[0]
+        assert body["givenName"] is None
+        assert body["emailAddresses"] == []
+        assert result.updated == 1
+
+    @pytest.mark.asyncio
+    async def test_unmapped_contact_with_no_data_is_not_created(
+        self, hass: MagicMock
+    ) -> None:
+        engine, _, graph, _ = _make_engine(hass, [{"resourceName": "people/empty"}])
+        result = await engine.async_sync()
+
+        graph.create_contact.assert_not_called()
+        assert result.skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_create_sends_sparse_body(self, hass: MagicMock) -> None:
+        engine, _, graph, _ = _make_engine(hass, [self._person()])
+        await engine.async_sync()
+
+        (body,) = graph.create_contact.call_args[0]
+        assert "mobilePhone" not in body
+        assert "otherAddress" not in body
+
+
 class TestDryRun:
     @pytest.mark.asyncio
     async def test_plan_classifies_create_update_skip(
@@ -306,7 +400,7 @@ class TestDryRun:
     ) -> None:
         from custom_components.google_outlook_contacts_sync.sync.mapping import (
             contact_hash,
-            to_graph_contact,
+            to_graph_contact_update,
         )
 
         # One brand-new person, one already-synced with a stale hash (update),
@@ -319,7 +413,7 @@ class TestDryRun:
             "resourceName": "people/c300",
             "names": [{"givenName": "Eve", "displayName": "Eve"}],
         }
-        unchanged_hash = contact_hash(to_graph_contact(unchanged))
+        unchanged_hash = contact_hash(to_graph_contact_update(unchanged))
 
         engine, _, graph, store = _make_engine(
             hass,
@@ -379,9 +473,7 @@ class TestDryRun:
         store.lookup.return_value = None
         store.get_hash.return_value = None
 
-        hass.async_add_executor_job = AsyncMock(
-            side_effect=lambda fn, *args: fn(*args)
-        )
+        hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
 
         engine = SyncEngine(hass, google_client, MagicMock(), store)
         plan = await engine.async_plan()

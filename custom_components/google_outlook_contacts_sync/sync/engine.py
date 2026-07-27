@@ -20,7 +20,12 @@ from .dedup import (
 )
 from .google_client import GoogleAuthError, GoogleContactsClient, SyncTokenExpiredError
 from .graph_client import GraphContactsClient, MSAuthError
-from .mapping import contact_hash, is_deleted, to_graph_contact
+from .mapping import (
+    contact_hash,
+    is_deleted,
+    to_graph_contact,
+    to_graph_contact_update,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -103,9 +108,7 @@ class SyncResult:
             "duplicates_removed": self.duplicates_removed,
             "errors": self.errors,
             "duplicates": self.duplicates,
-            "finished_at": (
-                self.finished_at.isoformat() if self.finished_at else None
-            ),
+            "finished_at": (self.finished_at.isoformat() if self.finished_at else None),
             "duration_seconds": self.duration_seconds,
         }
 
@@ -129,9 +132,7 @@ class SyncPlan:
             "to_update": [c.as_dict() for c in self.to_update],
             "to_delete": [c.as_dict() for c in self.to_delete],
             "total": self.total,
-            "finished_at": (
-                self.finished_at.isoformat() if self.finished_at else None
-            ),
+            "finished_at": (self.finished_at.isoformat() if self.finished_at else None),
         }
 
 
@@ -322,33 +323,39 @@ class SyncEngine:
                 SyncAction.SKIP, resource_name, _display_name(None, resource_name)
             )
 
-        graph_contact = to_graph_contact(person)
-        display_name = _display_name(graph_contact, resource_name)
-        if not graph_contact:
-            return _Decision(SyncAction.SKIP, resource_name, display_name)
+        create_contact = to_graph_contact(person)
+        update_contact = to_graph_contact_update(person)
+        display_name = _display_name(create_contact, resource_name)
 
-        current_hash = contact_hash(graph_contact)
+        # Change detection runs on the authoritative state so that removing the
+        # last value of a field still registers as a change.
+        current_hash = contact_hash(update_contact)
 
         if existing_id is None and adopt_index is not None:
             existing_id = _claim_adopt(adopt_index, display_name)
 
         if existing_id is None:
+            if not create_contact:
+                # Nothing mappable and nothing in Outlook yet — nothing to do.
+                return _Decision(SyncAction.SKIP, resource_name, display_name)
             return _Decision(
                 SyncAction.CREATE,
                 resource_name,
                 display_name,
-                graph_contact=graph_contact,
+                graph_contact=create_contact,
                 content_hash=current_hash,
             )
 
         if not force and self._store.get_hash(resource_name) == current_hash:
             return _Decision(SyncAction.SKIP, resource_name, display_name)
 
+        # A mapped contact is updated even when every supported Google field is
+        # now empty — that is exactly the case that must clear Outlook.
         return _Decision(
             SyncAction.UPDATE,
             resource_name,
             display_name,
-            graph_contact=graph_contact,
+            graph_contact=update_contact,
             existing_id=existing_id,
             content_hash=current_hash,
         )
@@ -442,9 +449,7 @@ class SyncEngine:
                 )
 
 
-def _claim_adopt(
-    adopt_index: dict[str, list[str]], display_name: str
-) -> str | None:
+def _claim_adopt(adopt_index: dict[str, list[str]], display_name: str) -> str | None:
     """Pop and return an unclaimed Outlook contact id matching the name."""
     key = " ".join(display_name.split()).casefold()
     candidates = adopt_index.get(key)
@@ -453,9 +458,7 @@ def _claim_adopt(
     return None
 
 
-def _display_name(
-    graph_contact: dict[str, Any] | None, resource_name: str
-) -> str:
+def _display_name(graph_contact: dict[str, Any] | None, resource_name: str) -> str:
     """Best-effort human label for a contact change."""
     if graph_contact:
         if display := graph_contact.get("displayName"):

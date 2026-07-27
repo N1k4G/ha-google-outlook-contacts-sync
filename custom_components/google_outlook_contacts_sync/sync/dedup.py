@@ -11,11 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Top-level Graph contact properties requested for dedup decisions.
-SELECT_FIELDS = (
-    "id,displayName,givenName,surname,emailAddresses,lastModifiedDateTime"
-)
-
 # Fields counted to gauge how "complete" a contact is when choosing a keeper.
 _COMPLETENESS_FIELDS = (
     "givenName",
@@ -27,10 +22,22 @@ _COMPLETENESS_FIELDS = (
     "mobilePhone",
     "homeAddress",
     "businessAddress",
+    "otherAddress",
     "companyName",
     "jobTitle",
     "birthday",
 )
+
+# Properties needed for dedup bookkeeping but not scored for completeness.
+_METADATA_FIELDS = ("id", "lastModifiedDateTime")
+
+# Top-level Graph contact properties requested for dedup decisions.
+#
+# Derived from the counted fields rather than written out separately: when these
+# drifted apart, 8 of 12 scored properties were never requested, so the keeper
+# heuristic silently degraded to "has a name/email, modified recently" while
+# deleting the losing contacts.
+SELECT_FIELDS = ",".join(_METADATA_FIELDS + _COMPLETENESS_FIELDS)
 
 
 @dataclass
@@ -88,9 +95,7 @@ def find_duplicate_groups(
     ]
 
 
-def choose_keeper(
-    group: DuplicateGroup, mapped_ids: set[str]
-) -> OutlookContact:
+def choose_keeper(group: DuplicateGroup, mapped_ids: set[str]) -> OutlookContact:
     """Pick the contact to keep from a duplicate group.
 
     Preference order: a contact already tracked in our mapping, then the most
