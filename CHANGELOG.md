@@ -5,11 +5,25 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-27
 
-### Requirements
+### Upgrade notes
 - **Minimum Home Assistant version is now 2024.12.0.** `hacs.json` previously
-  allowed 2024.1.0, on which the integration cannot import.
+  allowed 2024.1.0, on which the integration cannot import. HACS will not offer
+  this update to installations below 2024.12.0; if you installed manually, check
+  your version before updating.
+- **Every mapped contact is updated once on the first run after upgrading.**
+  Change detection now hashes the full authoritative field set rather than a
+  sparse payload, so all stored hashes are invalidated. Expected, one-time, and
+  self-limiting.
+- **"Synced contacts" may drop.** Contacts deleted in Google are now untracked
+  even when *Delete removed contacts* is off; previously they were counted
+  forever. The lower number is the accurate one.
+- **The `sync_now` service is debounced.** It now uses the same refresh path as
+  the Sync now button instead of forcing an immediate run, so rapid repeat calls
+  collapse into a single sync. Automations that assumed the sync had already
+  started when the service call returned should await the result via the
+  Last sync sensor instead.
 
 ### Fixed
 - Contact creation failed on every run: the Graph id was read off the
@@ -55,15 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mappings between instances in one process (#28).
 
 ### Changed
-- **Contacts are re-sent once after upgrading.** Change detection now hashes the
-  full authoritative field set, so every mapped contact is updated once on the
-  first run. This is expected and does not repeat.
-- **"Synced contacts" may drop after upgrading.** Contacts deleted in Google
-  are now untracked even when *Delete removed contacts* is off; previously they
-  were counted forever.
 - A failed full resync now clears the sync token so the next run reconciles in
   full again, instead of resuming from a stale delta cursor.
-- The `sync_now` service uses the same debounced refresh as the Sync now button.
+- Full resync adopts an existing Outlook contact only on a unique email match,
+  and auto-dedup skips groups containing more than one tracked contact.
 - Documentation corrected: HA's `.storage/` is **not** encrypted, and the Google
   step needs a **Web application** OAuth client, not a Desktop client (#12, #15).
 - Added a trademark and API-compliance disclaimer (#23).
