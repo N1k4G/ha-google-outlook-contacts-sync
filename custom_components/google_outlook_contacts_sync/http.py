@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from http import HTTPStatus
 
@@ -41,9 +42,7 @@ class MSAuthCallbackView(HomeAssistantView):
 
         state = params.get("state", "")
         flow_id = (
-            self.hass.data.get(DOMAIN, {})
-            .get(DATA_MS_OAUTH_FLOWS, {})
-            .pop(state, None)
+            self.hass.data.get(DOMAIN, {}).get(DATA_MS_OAUTH_FLOWS, {}).pop(state, None)
         )
 
         if flow_id is None:
@@ -140,19 +139,26 @@ class GoogleAuthCallbackView(HomeAssistantView):
         )
 
 
+# OAuth error descriptions are attacker-controllable query parameters echoed
+# back by an unauthenticated view, so everything interpolated into these pages
+# is escaped.
+_MAX_ERROR_LENGTH = 500
+
+
 def _success_page(product: str) -> str:
     return (
         f"<!DOCTYPE html><html><head><title>Authorized</title></head><body>"
-        f"<h2>{product} account authorized!</h2>"
+        f"<h2>{html.escape(product)} account authorized!</h2>"
         f"<p>You can close this tab and return to Home Assistant.</p>"
         f"</body></html>"
     )
 
 
 def _error_page(message: str) -> str:
+    truncated = message[:_MAX_ERROR_LENGTH]
     return (
         f"<!DOCTYPE html><html><head><title>Error</title></head><body>"
-        f"<h2>Authorization failed</h2><p>{message}</p>"
+        f"<h2>Authorization failed</h2><p>{html.escape(truncated)}</p>"
         f"<p>Please close this tab and try again in Home Assistant.</p>"
         f"</body></html>"
     )
