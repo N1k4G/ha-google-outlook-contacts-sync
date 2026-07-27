@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -26,8 +27,15 @@ def _make_engine(
     delete_removed: bool = False,
     auto_remove_duplicates: bool = False,
     outlook_raw: list[dict[str, Any]] | None = None,
+    stored_sync_token: str | None = "token_stored",
 ) -> tuple[SyncEngine, MagicMock, MagicMock, MagicMock]:
-    """Build a SyncEngine with mocked clients and store."""
+    """Build a SyncEngine with mocked clients and store.
+
+    *sync_token* is what the Google fetch returns; *stored_sync_token* is the
+    cursor already in the store. The latter defaults to a real token because
+    async_sync() routes to full reconciliation when it is None (#33), so a
+    delta-path test must start with a cursor.
+    """
     google_client = MagicMock()
     google_client.fetch_contacts.return_value = (people, sync_token)
 
@@ -38,7 +46,7 @@ def _make_engine(
     graph_client.list_contacts_raw.return_value = outlook_raw or []
 
     store = MagicMock()
-    store.sync_token = None
+    store.sync_token = stored_sync_token
     store.async_save = AsyncMock()
     mapping = existing_mapping or {}
     hashes = existing_hashes or {}
@@ -228,21 +236,27 @@ class TestSyncEngineErrors:
         assert len(result.errors) == 1
 
     @pytest.mark.asyncio
-    async def test_google_fetch_failure_returns_result(self, hass: MagicMock) -> None:
+    async def test_google_fetch_failure_propagates(self, hass: MagicMock) -> None:
+        """#14: a failed fetch must not look like a completed run.
+
+        It used to return a SyncResult with finished_at set, which the
+        coordinator accepted as success -- the last-sync sensor jumped to the
+        failure time and only the problem sensor showed anything was wrong.
+        """
         google_client = MagicMock()
         google_client.fetch_contacts.side_effect = ConnectionError("Network down")
         graph_client = MagicMock()
         store = MagicMock()
-        store.sync_token = None
+        store.sync_token = "token_stored"
         store.async_save = AsyncMock()
 
         hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
 
         engine = SyncEngine(hass, google_client, graph_client, store)
-        result = await engine.async_sync()
+        with pytest.raises(ConnectionError):
+            await engine.async_sync()
 
-        assert result.failed == 1
-        assert "Google fetch failed" in result.errors[0]
+        store.async_save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_expired_sync_token_triggers_full_resync(
@@ -255,6 +269,7 @@ class TestSyncEngineErrors:
         ]
         graph_client = MagicMock()
         graph_client.create_contact.return_value = "id-001"
+        graph_client.list_contacts_raw.return_value = []
         store = MagicMock()
         store.sync_token = "old_token"
         store.async_save = AsyncMock()
@@ -497,8 +512,8 @@ class TestSyncTokenOnFailure:
         result = await engine.async_sync()
 
         assert result.failed == 1
-        # Old token (None) preserved so the failed contact is retried next run.
-        assert store.sync_token is None
+        # Previous cursor preserved so the failed contact is retried next run.
+        assert store.sync_token == "token_stored"
         store.async_save.assert_called_once()
 
     @pytest.mark.asyncio
@@ -587,3 +602,235 @@ class TestDedup:
 
         graph.delete_contact.assert_not_called()
         assert result.duplicates_removed == 0
+
+
+def _first_call_gate(target: Any):
+    """Executor that suspends the *first* call to one target function.
+
+    Only the first call blocks, so a second concurrent run is held up purely by
+    the engine lock — never by the fixture. Without that distinction these tests
+    pass whether or not the lock exists.
+
+    Returned as a module-level async function rather than a callable object:
+    AsyncMock only awaits a side_effect that asyncio.iscoroutinefunction()
+    accepts, which is False for an instance with an async __call__.
+    """
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    armed = [True]
+
+    async def executor(fn: Any, *args: Any) -> Any:
+        if armed[0] and fn is target:
+            armed[0] = False
+            reached.set()
+            await release.wait()
+        return fn(*args)
+
+    executor.reached = reached  # type: ignore[attr-defined]
+    executor.release = release  # type: ignore[attr-defined]
+    return executor
+
+
+async def _settle(iterations: int = 20) -> None:
+    """Let every runnable task progress as far as it can."""
+    for _ in range(iterations):
+        await asyncio.sleep(0)
+
+
+class TestRunSerialization:
+    """#8: every public entry point shares one engine-local lock."""
+
+    @pytest.mark.asyncio
+    async def test_full_sync_waits_for_running_delta(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, google, graph, _ = _make_engine(hass, [simple_person])
+        gate = _first_call_gate(google.fetch_contacts)
+        hass.async_add_executor_job = AsyncMock(side_effect=gate)
+
+        first = asyncio.create_task(engine.async_sync())
+        await gate.reached.wait()  # delta run is suspended inside its fetch
+
+        second = asyncio.create_task(engine.async_full_sync())
+        await _settle()
+
+        # Its own fetch would not block, so reaching the Outlook snapshot here
+        # would mean the full sync overtook the running delta.
+        graph.list_contacts_raw.assert_not_called()
+        assert not second.done()
+
+        gate.release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+        graph.list_contacts_raw.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_waits_for_running_delta(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, google, _, _ = _make_engine(hass, [simple_person])
+        gate = _first_call_gate(google.fetch_contacts)
+        hass.async_add_executor_job = AsyncMock(side_effect=gate)
+
+        first = asyncio.create_task(engine.async_sync())
+        await gate.reached.wait()
+
+        plan = asyncio.create_task(engine.async_plan())
+        await _settle()
+
+        # Unlocked, the dry run would sail through to completion here.
+        assert not plan.done()
+
+        gate.release.set()
+        await asyncio.wait_for(asyncio.gather(first, plan), timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_full_sync_and_dry_run_are_serialised(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, google, _, _ = _make_engine(hass, [simple_person])
+        gate = _first_call_gate(google.fetch_contacts)
+        hass.async_add_executor_job = AsyncMock(side_effect=gate)
+
+        first = asyncio.create_task(engine.async_full_sync())
+        await gate.reached.wait()
+
+        plan = asyncio.create_task(engine.async_plan())
+        await _settle()
+        assert not plan.done()
+
+        gate.release.set()
+        await asyncio.wait_for(asyncio.gather(first, plan), timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_lock_is_released_after_an_exception(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, google, _, _ = _make_engine(hass, [simple_person])
+        google.fetch_contacts.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            await engine.async_sync()
+
+        # A later caller must still be able to acquire the lock.
+        google.fetch_contacts.side_effect = None
+        google.fetch_contacts.return_value = ([simple_person], "token_new")
+        result = await engine.async_sync()
+        assert result.created == 1
+
+    @pytest.mark.asyncio
+    async def test_no_double_create_from_overlapping_runs(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """Overlapping runs must create an unmapped contact at most once.
+
+        Unlocked, the second run decides CREATE from a store snapshot taken
+        before the first run saved its mapping, and Outlook ends up with two
+        copies of the same person.
+        """
+        engine, _, graph, _ = _make_engine(hass, [simple_person])
+        gate = _first_call_gate(graph.create_contact)
+        hass.async_add_executor_job = AsyncMock(side_effect=gate)
+
+        first = asyncio.create_task(engine.async_sync())
+        await gate.reached.wait()  # first run is mid-create, mapping not saved
+
+        second = asyncio.create_task(engine.async_sync())
+        await _settle()
+
+        gate.release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+
+        # Having acquired the lock, the second run re-reads the store, finds the
+        # mapping and hash the first run wrote, and skips instead of creating.
+        assert graph.create_contact.call_count == 1
+        second_result = second.result()
+        assert second_result.created == 0
+        assert second_result.skipped == 1
+
+
+class TestCursorSemantics:
+    """#33: no valid cursor always means full reconciliation."""
+
+    @pytest.mark.asyncio
+    async def test_sync_without_token_uses_full_pipeline(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, google, graph, _ = _make_engine(
+            hass, [simple_person], stored_sync_token=None
+        )
+        await engine.async_sync()
+
+        # The Outlook snapshot is only loaded by the full pipeline.
+        graph.list_contacts_raw.assert_called_once()
+        google.fetch_contacts.assert_called_once_with(None)
+
+    @pytest.mark.asyncio
+    async def test_expired_token_uses_full_pipeline(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, google, graph, _ = _make_engine(hass, [simple_person])
+        google.fetch_contacts.side_effect = [
+            SyncTokenExpiredError("expired"),
+            ([simple_person], "token_fresh"),
+        ]
+
+        await engine.async_sync()
+
+        graph.list_contacts_raw.assert_called_once()
+        assert google.fetch_contacts.call_args_list[-1][0][0] is None
+
+    @pytest.mark.asyncio
+    async def test_successful_full_sync_stores_fresh_token(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, _, store = _make_engine(
+            hass, [simple_person], sync_token="tok_fresh"
+        )
+        await engine.async_full_sync()
+        assert store.sync_token == "tok_fresh"
+
+    @pytest.mark.asyncio
+    async def test_failed_full_sync_clears_the_cursor(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """A stale delta cursor would never re-deliver the failed contact."""
+        engine, _, graph, store = _make_engine(
+            hass, [simple_person], sync_token="tok_fresh"
+        )
+        graph.create_contact.side_effect = RuntimeError("boom")
+
+        result = await engine.async_full_sync()
+
+        assert result.failed == 1
+        assert store.sync_token is None
+        store.async_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_after_failed_full_sync_is_full_again(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass, [simple_person], sync_token="tok_fresh"
+        )
+        graph.create_contact.side_effect = RuntimeError("boom")
+        await engine.async_full_sync()
+        assert store.sync_token is None
+
+        graph.create_contact.side_effect = None
+        graph.create_contact.return_value = "graph-id-001"
+        graph.list_contacts_raw.reset_mock()
+
+        await engine.async_sync()
+        graph.list_contacts_raw.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_failed_delta_keeps_its_cursor(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass, [simple_person], sync_token="tok_new"
+        )
+        graph.create_contact.side_effect = RuntimeError("boom")
+
+        await engine.async_sync()
+        assert store.sync_token == "token_stored"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,7 +19,7 @@ from .dedup import (
     choose_keeper,
     find_duplicate_groups,
 )
-from .google_client import GoogleAuthError, GoogleContactsClient, SyncTokenExpiredError
+from .google_client import GoogleContactsClient, SyncTokenExpiredError
 from .graph_client import GraphContactsClient, MSAuthError
 from .mapping import (
     contact_hash,
@@ -154,22 +155,58 @@ class SyncEngine:
         self._store = store
         self._delete_removed = delete_removed
         self._auto_remove_duplicates = auto_remove_duplicates
+        # Serialises every public run. The scheduled coordinator refresh, the
+        # sync/full-sync services, both buttons and the dry run all reach this
+        # one engine and the one store; without this they interleave at every
+        # await and can double-create contacts or cross their sync tokens.
+        self._run_lock = asyncio.Lock()
 
     async def async_sync(self) -> SyncResult:
         """Delta sync pass: apply changed Google contacts to Outlook."""
+        async with self._run_lock:
+            return await self._async_sync_unlocked()
+
+    async def async_full_sync(self) -> SyncResult:
+        """Full reconciliation of every Google contact against Outlook."""
+        async with self._run_lock:
+            return await self._async_full_sync_unlocked()
+
+    async def async_plan(self) -> SyncPlan:
+        """Compute what a sync would do, without applying or persisting.
+
+        Takes the same lock as a real run: a preview computed from a store that
+        is being mutated mid-run describes a state that never existed.
+        """
+        async with self._run_lock:
+            return await self._async_plan_unlocked()
+
+    # ------------------------------------------------------------------
+    # Run implementations — these never take the lock themselves, so they can
+    # call each other. asyncio.Lock is not reentrant.
+    # ------------------------------------------------------------------
+
+    async def _async_sync_unlocked(self) -> SyncResult:
+        """Delta pass, or full reconciliation when there is no usable cursor.
+
+        Without a valid sync token there is no delta to apply, and running the
+        delta pipeline over a full fetch skips adoption, stale-mapping repair
+        and drift correction — the very things a full fetch exists to do.
+        """
+        if self._store.sync_token is None:
+            _LOGGER.debug("No Google sync token stored; running full reconciliation")
+            return await self._async_full_sync_unlocked()
+
         result = SyncResult()
         started = dt_util.utcnow()
 
         try:
             people, new_sync_token = await self._fetch_people(self._store.sync_token)
         except SyncTokenExpiredError:
-            _LOGGER.warning("Google sync token expired; performing full re-sync")
+            _LOGGER.warning(
+                "Google sync token expired; running full reconciliation instead"
+            )
             self._store.sync_token = None
-            people, new_sync_token = await self._fetch_people(None)
-        except (GoogleAuthError, MSAuthError):
-            raise
-        except Exception as exc:
-            return self._fail_fetch(result, started, exc)
+            return await self._async_full_sync_unlocked()
 
         for person in people:
             await self._process(self._decide(person), person, result)
@@ -177,23 +214,17 @@ class SyncEngine:
         if self._auto_remove_duplicates:
             await self._dedupe(result)
 
-        await self._finalize(result, started, new_sync_token)
+        await self._finalize_delta(result, started, new_sync_token)
         return result
 
-    async def async_full_sync(self) -> SyncResult:
-        """Full reconciliation: fetch all Google contacts, adopt matching
-        Outlook contacts by name (so we don't create duplicates), and push any
-        differences. Resets the delta token to the freshly returned one.
+    async def _async_full_sync_unlocked(self) -> SyncResult:
+        """Fetch every Google contact, adopt matching Outlook contacts (so we
+        don't create duplicates), and push any differences.
         """
         result = SyncResult()
         started = dt_util.utcnow()
 
-        try:
-            people, new_sync_token = await self._fetch_people(None)
-        except (GoogleAuthError, MSAuthError):
-            raise
-        except Exception as exc:
-            return self._fail_fetch(result, started, exc)
+        people, new_sync_token = await self._fetch_people(None)
 
         adopt_index = await self._build_adopt_index()
 
@@ -205,15 +236,11 @@ class SyncEngine:
         if self._auto_remove_duplicates:
             await self._dedupe(result)
 
-        # A full sync rebuilds state, so adopt the new token regardless of the
-        # previous one (still only when nothing failed).
-        self._store.sync_token = None
-        await self._finalize(result, started, new_sync_token)
+        await self._finalize_full(result, started, new_sync_token)
         _LOGGER.info("Full resync complete: %s", result.summary())
         return result
 
-    async def async_plan(self) -> SyncPlan:
-        """Compute what a delta sync would do, without applying or persisting."""
+    async def _async_plan_unlocked(self) -> SyncPlan:
         plan = SyncPlan()
 
         try:
@@ -252,28 +279,46 @@ class SyncEngine:
             self._google.fetch_contacts, sync_token
         )
 
-    def _fail_fetch(
-        self, result: SyncResult, started: datetime, exc: Exception
-    ) -> SyncResult:
-        _LOGGER.error("Failed to fetch Google contacts: %s", exc)
-        result.failed += 1
-        result.errors.append(f"Google fetch failed: {exc}")
-        result.finished_at = dt_util.utcnow()
-        result.duration_seconds = (result.finished_at - started).total_seconds()
-        return result
-
-    async def _finalize(
+    async def _finalize_delta(
         self, result: SyncResult, started: datetime, new_sync_token: str | None
     ) -> None:
-        # Only advance the delta cursor when the run was clean — otherwise a
-        # failed contact would be skipped forever on subsequent delta syncs.
-        if new_sync_token and result.failed == 0:
-            self._store.sync_token = new_sync_token
-        elif new_sync_token and result.failed:
+        """Advance the delta cursor only on a clean run.
+
+        Keeping the previous token on failure means Google re-delivers the same
+        changes next time, so a failed contact is retried instead of skipped
+        forever.
+        """
+        if result.failed:
             _LOGGER.warning(
-                "Keeping previous sync token: %d contact(s) failed this run",
+                "Keeping previous sync token: %d operation(s) failed this run",
                 result.failed,
             )
+        elif new_sync_token:
+            self._store.sync_token = new_sync_token
+        await self._persist(result, started)
+
+    async def _finalize_full(
+        self, result: SyncResult, started: datetime, new_sync_token: str | None
+    ) -> None:
+        """Set the fresh cursor, or drop it entirely when the run failed.
+
+        The previous token is deliberately *not* restored on failure: a contact
+        that failed reconciliation may have last changed before that cursor, so
+        a later delta would never deliver it again. Clearing it routes the next
+        run back into full reconciliation.
+        """
+        if result.failed:
+            self._store.sync_token = None
+            _LOGGER.warning(
+                "Discarding sync token: %d operation(s) failed during full resync; "
+                "the next run will reconcile in full again",
+                result.failed,
+            )
+        else:
+            self._store.sync_token = new_sync_token
+        await self._persist(result, started)
+
+    async def _persist(self, result: SyncResult, started: datetime) -> None:
         await self._store.async_save()
         result.finished_at = dt_util.utcnow()
         result.duration_seconds = (result.finished_at - started).total_seconds()
