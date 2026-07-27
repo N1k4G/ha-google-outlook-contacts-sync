@@ -1010,6 +1010,166 @@ async def _settle(iterations: int = 20) -> None:
         await asyncio.sleep(0)
 
 
+def _dupe(contact_id: str, name: str = "Bob Jones", email: str | None = None):
+    raw: dict[str, Any] = {"id": contact_id, "displayName": name}
+    if email:
+        raw["emailAddresses"] = [{"address": email}]
+    return raw
+
+
+class TestDedupSafety:
+    """#27 error handling and #31 many-to-one protection."""
+
+    @pytest.mark.asyncio
+    async def test_auth_error_while_listing_propagates(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        from custom_components.google_outlook_contacts_sync.sync.graph_client import (
+            MSAuthError,
+        )
+
+        engine, _, graph, _ = _make_engine(
+            hass, [simple_person], auto_remove_duplicates=True
+        )
+        graph.list_contacts_raw.side_effect = MSAuthError("token gone")
+
+        with pytest.raises(MSAuthError):
+            await engine.async_sync()
+
+    @pytest.mark.asyncio
+    async def test_auth_error_while_deleting_propagates(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        from custom_components.google_outlook_contacts_sync.sync.graph_client import (
+            MSAuthError,
+        )
+
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            auto_remove_duplicates=True,
+            outlook_raw=[_dupe("outlook-1"), _dupe("outlook-2")],
+        )
+        graph.delete_contact.side_effect = MSAuthError("token gone")
+
+        with pytest.raises(MSAuthError):
+            await engine.async_sync()
+
+        store.repoint_mapping.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_listing_failure_counts_as_failed(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """errors alone left the problem sensor off and advanced the cursor."""
+        engine, _, graph, store = _make_engine(
+            hass, [simple_person], auto_remove_duplicates=True, sync_token="tok_after"
+        )
+        graph.list_contacts_raw.side_effect = RuntimeError("graph down")
+
+        result = await engine.async_sync()
+
+        assert result.failed == 1
+        assert any("Dedup listing failed" in e for e in result.errors)
+        assert store.sync_token == "token_stored"
+
+    @pytest.mark.asyncio
+    async def test_delete_failure_counts_and_processing_continues(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            auto_remove_duplicates=True,
+            outlook_raw=[
+                _dupe("outlook-keep"),
+                _dupe("outlook-bad"),
+                _dupe("outlook-good"),
+            ],
+        )
+
+        def _delete(contact_id: str) -> None:
+            if contact_id == "outlook-bad":
+                raise RuntimeError("boom")
+
+        graph.delete_contact.side_effect = _delete
+
+        result = await engine.async_sync()
+
+        assert result.failed == 1
+        assert result.duplicates_removed == 1
+        assert graph.delete_contact.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_group_with_two_tracked_contacts_is_skipped(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        """Regression for #31: merging these corrupts the mapping permanently."""
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/a": "outlook-a", "people/b": "outlook-b"},
+            auto_remove_duplicates=True,
+            outlook_raw=[_dupe("outlook-a"), _dupe("outlook-b")],
+        )
+
+        result = await engine.async_sync()
+
+        graph.delete_contact.assert_not_called()
+        store.repoint_mapping.assert_not_called()
+        assert result.duplicates_removed == 0
+
+    @pytest.mark.asyncio
+    async def test_one_tracked_contact_becomes_the_keeper(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, store = _make_engine(
+            hass,
+            [simple_person],
+            existing_mapping={"people/a": "outlook-a"},
+            auto_remove_duplicates=True,
+            outlook_raw=[_dupe("outlook-a"), _dupe("outlook-untracked")],
+        )
+
+        result = await engine.async_sync()
+
+        graph.delete_contact.assert_called_once_with("outlook-untracked")
+        assert result.duplicates_removed == 1
+        assert store.lookup("people/a") == "outlook-a"
+
+    @pytest.mark.asyncio
+    async def test_untracked_group_still_deduplicates(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, graph, _ = _make_engine(
+            hass,
+            [simple_person],
+            auto_remove_duplicates=True,
+            outlook_raw=[_dupe("outlook-1"), _dupe("outlook-2")],
+        )
+
+        result = await engine.async_sync()
+
+        assert graph.delete_contact.call_count == 1
+        assert result.duplicates_removed == 1
+
+    @pytest.mark.asyncio
+    async def test_duplicates_records_one_entry_per_group(
+        self, hass: MagicMock, simple_person: dict[str, Any]
+    ) -> None:
+        engine, _, _, _ = _make_engine(
+            hass,
+            [simple_person],
+            auto_remove_duplicates=True,
+            outlook_raw=[_dupe("o-1"), _dupe("o-2"), _dupe("o-3")],
+        )
+
+        result = await engine.async_sync()
+
+        assert result.duplicates_removed == 2
+        assert result.duplicates == ["bob jones"]
+
+
 class TestRunSerialization:
     """#8: every public entry point shares one engine-local lock."""
 

@@ -610,8 +610,13 @@ class SyncEngine:
             raw = await self._hass.async_add_executor_job(
                 self._graph.list_contacts_raw, SELECT_FIELDS
             )
+        except MSAuthError:
+            # Must reach the coordinator so the reauth flow starts; a generic
+            # handler here would let an expired token pass as a clean run.
+            raise
         except Exception as exc:
             _LOGGER.error("Failed to list Outlook contacts for dedup: %s", exc)
+            result.failed += 1
             result.errors.append(f"Dedup listing failed: {exc}")
             return
 
@@ -620,7 +625,27 @@ class SyncEngine:
         mapped_ids = self._store.mapped_ids()
 
         for group in groups:
+            tracked_in_group = {
+                contact.contact_id
+                for contact in group.contacts
+                if contact.contact_id in mapped_ids
+            }
+            if len(tracked_in_group) > 1:
+                # Merging these would repoint several Google resources onto one
+                # Outlook contact, after which they overwrite each other on
+                # every sync. Counting group members instead of *tracked* members
+                # would miss this.
+                _LOGGER.warning(
+                    "Not deduplicating %r: %d of its contacts are already tracked "
+                    "by different Google contacts, so merging them would corrupt "
+                    "the mapping",
+                    group.key,
+                    len(tracked_in_group),
+                )
+                continue
+
             keeper = choose_keeper(group, mapped_ids)
+            removed_from_group = 0
             for contact in group.contacts:
                 if contact.contact_id == keeper.contact_id:
                     continue
@@ -628,21 +653,29 @@ class SyncEngine:
                     await self._hass.async_add_executor_job(
                         self._graph.delete_contact, contact.contact_id
                     )
+                except MSAuthError:
+                    raise
                 except Exception as exc:
+                    # Independent groups are unaffected, so keep going.
                     _LOGGER.error(
                         "Failed to delete duplicate %s: %s", contact.contact_id, exc
                     )
+                    result.failed += 1
                     result.errors.append(f"Dedup delete failed: {exc}")
                     continue
                 self._store.repoint_mapping(contact.contact_id, keeper.contact_id)
                 result.duplicates_removed += 1
-                result.duplicates.append(group.key)
+                removed_from_group += 1
                 _LOGGER.warning(
                     "Removed duplicate Outlook contact %s (name=%r); kept %s",
                     contact.contact_id,
                     group.key,
                     keeper.contact_id,
                 )
+
+            # One entry per group actually acted on, not one per deleted contact.
+            if removed_from_group:
+                result.duplicates.append(group.key)
 
 
 def _emails_of(graph_contact: dict[str, Any]) -> set[str]:
