@@ -15,7 +15,7 @@
       },
       "google_credentials": {
         "title": "Google-Konto — App-Anmeldedaten",
-        "description": "Gib die Client-ID und das Client-Secret deines Google Cloud OAuth 2.0 Desktop-Clients ein.",
+        "description": "Gib die Client-ID und das Client-Secret deines Google Cloud OAuth 2.0 Webanwendungs-Clients ein.",
         "data": {
           "google_client_id": "Google Client-ID",
           "google_client_secret": "Google Client-Secret"
@@ -58,20 +58,40 @@
   },
   "entity": {
     "sensor": {
-      "last_sync": { "name": "Letzte Synchronisierung" },
-      "last_sync_result": { "name": "Ergebnis der letzten Synchronisierung" },
-      "next_sync": { "name": "Nächste Synchronisierung" },
-      "synced_contacts": { "name": "Synchronisierte Kontakte" },
-      "duplicates_removed": { "name": "Entfernte Duplikate" },
-      "dry_run_preview": { "name": "Probelauf-Vorschau" }
+      "last_sync": {
+        "name": "Letzte Synchronisierung"
+      },
+      "last_sync_result": {
+        "name": "Ergebnis der letzten Synchronisierung"
+      },
+      "next_sync": {
+        "name": "Nächste Synchronisierung"
+      },
+      "synced_contacts": {
+        "name": "Synchronisierte Kontakte"
+      },
+      "duplicates_removed": {
+        "name": "Entfernte Duplikate"
+      },
+      "dry_run_preview": {
+        "name": "Probelauf-Vorschau"
+      }
     },
     "binary_sensor": {
-      "sync_problem": { "name": "Synchronisierungsproblem" }
+      "sync_problem": {
+        "name": "Synchronisierungsproblem"
+      }
     },
     "button": {
-      "sync_now": { "name": "Jetzt synchronisieren" },
-      "full_resync": { "name": "Vollständige Neusynchronisierung" },
-      "run_dry_run": { "name": "Probelauf starten" }
+      "sync_now": {
+        "name": "Jetzt synchronisieren"
+      },
+      "full_resync": {
+        "name": "Vollständige Neusynchronisierung"
+      },
+      "run_dry_run": {
+        "name": "Probelauf starten"
+      }
     }
   },
   "services": {

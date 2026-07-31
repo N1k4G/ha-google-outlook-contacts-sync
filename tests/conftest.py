@@ -13,7 +13,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 def load_fixture(name: str) -> dict[str, Any]:
     """Load a JSON fixture file from tests/fixtures/."""
-    return json.loads((FIXTURES_DIR / name).read_text())
+    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
 @pytest.fixture

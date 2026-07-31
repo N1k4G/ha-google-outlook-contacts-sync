@@ -11,11 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Top-level Graph contact properties requested for dedup decisions.
-SELECT_FIELDS = (
-    "id,displayName,givenName,surname,emailAddresses,lastModifiedDateTime"
-)
-
 # Fields counted to gauge how "complete" a contact is when choosing a keeper.
 _COMPLETENESS_FIELDS = (
     "givenName",
@@ -27,15 +22,45 @@ _COMPLETENESS_FIELDS = (
     "mobilePhone",
     "homeAddress",
     "businessAddress",
+    "otherAddress",
     "companyName",
     "jobTitle",
     "birthday",
 )
 
+# Properties needed for dedup bookkeeping but not scored for completeness.
+_METADATA_FIELDS = ("id", "lastModifiedDateTime")
+
+# Top-level Graph contact properties requested for dedup decisions.
+#
+# Derived from the counted fields rather than written out separately: when these
+# drifted apart, 8 of 12 scored properties were never requested, so the keeper
+# heuristic silently degraded to "has a name/email, modified recently" while
+# deleting the losing contacts.
+SELECT_FIELDS = ",".join(_METADATA_FIELDS + _COMPLETENESS_FIELDS)
+
+
+def normalize_email(address: str) -> str:
+    """Normalize an email address for identity comparison."""
+    return address.strip().casefold()
+
+
+def emails_from_graph(raw: dict[str, Any]) -> frozenset[str]:
+    """Normalized email addresses of a raw Graph contact."""
+    entries = raw.get("emailAddresses") or []
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(
+        normalized
+        for entry in entries
+        if isinstance(entry, dict)
+        and (normalized := normalize_email(str(entry.get("address") or "")))
+    )
+
 
 @dataclass
 class OutlookContact:
-    """Minimal view of an Outlook contact for dedup decisions."""
+    """Minimal view of an Outlook contact for dedup and adoption decisions."""
 
     contact_id: str
     display_name: str = ""
@@ -43,6 +68,7 @@ class OutlookContact:
     surname: str = ""
     field_count: int = 0
     last_modified: str = ""
+    emails: frozenset[str] = frozenset()
 
     @classmethod
     def from_graph(cls, raw: dict[str, Any]) -> OutlookContact:
@@ -53,6 +79,7 @@ class OutlookContact:
             surname=raw.get("surname") or "",
             field_count=sum(1 for f in _COMPLETENESS_FIELDS if raw.get(f)),
             last_modified=raw.get("lastModifiedDateTime") or "",
+            emails=emails_from_graph(raw),
         )
 
     def name_key(self) -> str | None:
@@ -88,9 +115,7 @@ def find_duplicate_groups(
     ]
 
 
-def choose_keeper(
-    group: DuplicateGroup, mapped_ids: set[str]
-) -> OutlookContact:
+def choose_keeper(group: DuplicateGroup, mapped_ids: set[str]) -> OutlookContact:
     """Pick the contact to keep from a duplicate group.
 
     Preference order: a contact already tracked in our mapping, then the most

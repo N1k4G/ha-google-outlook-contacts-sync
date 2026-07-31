@@ -9,30 +9,64 @@ from typing import Any
 
 from ..const import BIRTHDAY_PLACEHOLDER_YEAR
 
-# Graph email address type labels
-_EMAIL_TYPE_MAP: dict[str, str] = {
-    "home": "personal",
-    "work": "work",
-    "other": "other",
-}
+# The Graph contact properties this integration owns. Everything else on an
+# Outlook contact is left untouched.
+#
+# These three tuples are the single source of truth for building payloads,
+# clearing removed values and hashing for change detection — keeping them apart
+# is what let sparse payloads and stored hashes drift out of sync.
+MANAGED_COLLECTION_FIELDS = (
+    "emailAddresses",
+    "homePhones",
+    "businessPhones",
+)
+MANAGED_SCALAR_FIELDS = (
+    "givenName",
+    "surname",
+    "displayName",
+    "fileAs",
+    "mobilePhone",
+    "birthday",
+    "companyName",
+    "jobTitle",
+    "department",
+)
+MANAGED_ADDRESS_FIELDS = (
+    "homeAddress",
+    "businessAddress",
+    "otherAddress",
+)
+
+MANAGED_GRAPH_FIELDS = (
+    MANAGED_COLLECTION_FIELDS + MANAGED_SCALAR_FIELDS + MANAGED_ADDRESS_FIELDS
+)
 
 # Graph phone type buckets
 _PHONE_HOME = {"home"}
 _PHONE_MOBILE = {"mobile"}
 _PHONE_WORK = {"work", "work_fax", "company_main"}
 
+# Google address type → Graph address slot. Anything unrecognised (including
+# "other" and user-defined labels) belongs in otherAddress, never business.
+_ADDRESS_TYPE_MAP: dict[str, str] = {
+    "home": "homeAddress",
+    "work": "businessAddress",
+}
+_DEFAULT_ADDRESS_FIELD = "otherAddress"
+
 
 def to_graph_contact(person: dict[str, Any]) -> dict[str, Any]:
-    """Convert a Google People API Person to a Graph Contact request body.
+    """Convert a Google Person to a *sparse* Graph Contact body, for creation.
 
-    Only fields that are populated in the Google person are included —
-    missing fields are left absent so Graph doesn't overwrite existing data
-    with empty values on partial updates.
+    Only populated fields are included. Suitable for POST, where absent
+    properties simply stay unset — use :func:`to_graph_contact_update` for
+    PATCH, which must also clear fields removed in Google.
     """
     contact: dict[str, Any] = {}
 
-    _map_names(person, contact)
-    _map_emails(person, contact)
+    name = _primary_or_first(person.get("names", []))
+    _map_names(name, contact)
+    _map_emails(person, contact, _display_name_from(name))
     _map_phones(person, contact)
     _map_birthday(person, contact)
     _map_addresses(person, contact)
@@ -41,17 +75,38 @@ def to_graph_contact(person: dict[str, Any]) -> dict[str, Any]:
     return contact
 
 
+def to_graph_contact_update(person: dict[str, Any]) -> dict[str, Any]:
+    """Convert a Google Person to an *authoritative* Graph Contact body.
+
+    Every managed property is present, with an explicit empty value where Google
+    has no data. Graph treats properties omitted from a PATCH as unchanged, so a
+    sparse body can never clear a field the user deleted in Google — the value
+    would survive in Outlook forever while the stored hash claimed it was synced.
+    """
+    contact = to_graph_contact(person)
+
+    for graph_field in MANAGED_COLLECTION_FIELDS:
+        contact.setdefault(graph_field, [])
+    for graph_field in MANAGED_SCALAR_FIELDS + MANAGED_ADDRESS_FIELDS:
+        contact.setdefault(graph_field, None)
+
+    return contact
+
+
 def contact_hash(graph_contact: dict[str, Any]) -> str:
-    """Return a stable SHA-256 digest of a Graph contact dict for change detection."""
+    """Return a stable SHA-256 digest of a Graph contact dict for change detection.
+
+    Callers must hash the authoritative representation, not the sparse one:
+    hashing a sparse body makes "field removed in Google" indistinguishable from
+    "field never set".
+    """
     serialized = json.dumps(graph_contact, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 def is_deleted(person: dict[str, Any]) -> bool:
     """Return True if the Google People API marks this person as deleted."""
-    return bool(
-        person.get("metadata", {}).get("deleted", False)
-    )
+    return bool(person.get("metadata", {}).get("deleted", False))
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +123,18 @@ def _primary_or_first(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     return items[0]
 
 
-def _map_names(person: dict[str, Any], contact: dict[str, Any]) -> None:
-    names: list[dict[str, Any]] = person.get("names", [])
-    name = _primary_or_first(names)
+def _display_name_from(name: dict[str, Any] | None) -> str:
+    """Best available human name for the contact, or ""."""
+    if name is None:
+        return ""
+    if display := name.get("displayName", ""):
+        return str(display)
+    given = name.get("givenName", "")
+    family = name.get("familyName", "")
+    return f"{given} {family}".strip()
+
+
+def _map_names(name: dict[str, Any] | None, contact: dict[str, Any]) -> None:
     if name is None:
         return
     given = name.get("givenName", "")
@@ -86,7 +150,9 @@ def _map_names(person: dict[str, Any], contact: dict[str, Any]) -> None:
         contact["fileAs"] = display
 
 
-def _map_emails(person: dict[str, Any], contact: dict[str, Any]) -> None:
+def _map_emails(
+    person: dict[str, Any], contact: dict[str, Any], display_name: str
+) -> None:
     emails: list[dict[str, Any]] = person.get("emailAddresses", [])
     if not emails:
         return
@@ -96,9 +162,13 @@ def _map_emails(person: dict[str, Any], contact: dict[str, Any]) -> None:
         address = email.get("value", "").strip()
         if not address:
             continue
-        google_type = email.get("type", "other").lower()
-        graph_type = _EMAIL_TYPE_MAP.get(google_type, "other")
-        graph_emails.append({"address": address, "name": graph_type})
+        # Graph's emailAddresses[].name is the display name for the address, not
+        # a type label — Google's home/work/other has no Graph counterpart here
+        # and must not be smuggled into it.
+        entry: dict[str, str] = {"address": address}
+        if display_name:
+            entry["name"] = display_name
+        graph_emails.append(entry)
 
     if graph_emails:
         contact["emailAddresses"] = graph_emails
@@ -161,13 +231,16 @@ def _map_birthday(person: dict[str, Any], contact: dict[str, Any]) -> None:
 
 
 def _map_addresses(person: dict[str, Any], contact: dict[str, Any]) -> None:
+    """Fill each Graph address slot with the first valid Google address of that type.
+
+    An address with no transferable fields is skipped without consuming its slot,
+    so a later valid address of the same type still lands.
+    """
     addresses: list[dict[str, Any]] = person.get("addresses", [])
     if not addresses:
         return
 
-    graph_addresses: list[dict[str, str]] = []
     for addr in addresses:
-        google_type = addr.get("type", "other").lower()
         graph_addr: dict[str, str] = {}
         if street := addr.get("streetAddress", ""):
             graph_addr["street"] = street
@@ -183,26 +256,10 @@ def _map_addresses(person: dict[str, Any], contact: dict[str, Any]) -> None:
         if not graph_addr:
             continue
 
-        graph_addr["type"] = "home" if google_type == "home" else "business"
-        graph_addresses.append(graph_addr)
-
-    if graph_addresses:
-        _assign_addresses(graph_addresses, contact)
-
-
-def _assign_addresses(
-    graph_addresses: list[dict[str, str]], contact: dict[str, Any]
-) -> None:
-    """Write first home and first business address into the contact dict."""
-    contact.pop("homeAddress", None)
-    contact.pop("businessAddress", None)
-
-    for addr in graph_addresses:
-        addr_type = addr.pop("type", "home")
-        if addr_type == "home" and "homeAddress" not in contact:
-            contact["homeAddress"] = addr
-        elif addr_type == "business" and "businessAddress" not in contact:
-            contact["businessAddress"] = addr
+        google_type = addr.get("type", "other").lower()
+        graph_field = _ADDRESS_TYPE_MAP.get(google_type, _DEFAULT_ADDRESS_FIELD)
+        if graph_field not in contact:
+            contact[graph_field] = graph_addr
 
 
 def _map_organization(person: dict[str, Any], contact: dict[str, Any]) -> None:

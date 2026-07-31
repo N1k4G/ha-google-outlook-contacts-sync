@@ -48,9 +48,9 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
 
     def _store_reauth_provider(self, exc: Exception) -> None:
         provider = "google" if isinstance(exc, GoogleAuthError) else "ms"
-        self.hass.data.setdefault(DOMAIN, {}).setdefault(
-            DATA_REAUTH_PROVIDER, {}
-        )[self._entry.entry_id] = provider
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(DATA_REAUTH_PROVIDER, {})[
+            self._entry.entry_id
+        ] = provider
 
     async def _async_update_data(self) -> SyncResult:
         """Fetch the latest data — called by the coordinator on schedule."""

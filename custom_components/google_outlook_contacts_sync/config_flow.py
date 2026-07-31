@@ -40,7 +40,7 @@ from .const import (
     DOMAIN,
     GOOGLE_AUTH_CALLBACK_PATH,
 )
-from .http import GoogleAuthCallbackView, MSAuthCallbackView
+from .http import async_register_callback_views
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -102,9 +102,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return await self.async_step_ms_credentials(user_input)
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Re-authorize the provider whose token is invalid or expired."""
         entry_id = self.context.get("entry_id", "")
         reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
@@ -175,9 +173,10 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self.hass.config.external_url:
             return self.async_abort(reason="missing_external_url")
 
-        # async_setup is not called during first-time setup (no config entry
-        # exists yet), so the callback view must be registered here.
-        self.hass.http.register_view(MSAuthCallbackView(self.hass))
+        # async_setup has not run during first-time setup (no config entry
+        # exists yet), so the callback views are registered here; the helper
+        # makes repeated flow attempts idempotent.
+        async_register_callback_views(self.hass)
 
         try:
             redirect_uri = self._build_redirect_uri()
@@ -200,9 +199,9 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         msal_state: str = (
             self._ms_auth_flow.get("state", "") if self._ms_auth_flow else ""
         )
-        self.hass.data.setdefault(DOMAIN, {}).setdefault(
-            DATA_MS_OAUTH_FLOWS, {}
-        )[msal_state] = self.flow_id
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(DATA_MS_OAUTH_FLOWS, {})[
+            msal_state
+        ] = self.flow_id
 
         return self.async_external_step(
             step_id="ms_auth_url",
@@ -284,7 +283,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self.hass.config.external_url:
             return self.async_abort(reason="missing_external_url")
 
-        self.hass.http.register_view(GoogleAuthCallbackView(self.hass))
+        async_register_callback_views(self.hass)
 
         try:
             redirect_uri = self._build_google_redirect_uri()
@@ -305,9 +304,9 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors={"base": "google_auth_failed"},
             )
 
-        self.hass.data.setdefault(DOMAIN, {}).setdefault(
-            DATA_GOOGLE_OAUTH_FLOWS, {}
-        )[google_state] = self.flow_id
+        self.hass.data.setdefault(DOMAIN, {}).setdefault(DATA_GOOGLE_OAUTH_FLOWS, {})[
+            google_state
+        ] = self.flow_id
 
         return self.async_external_step(
             step_id="google_auth_url",

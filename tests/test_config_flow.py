@@ -27,12 +27,8 @@ class TestOptionsFlow:
 
     def test_options_schema_rejects_zero_interval(self) -> None:
         with pytest.raises(vol.Invalid):
-            _OPTIONS_SCHEMA(
-                {CONF_SYNC_INTERVAL_HOURS: 0, CONF_DELETE_REMOVED: False}
-            )
+            _OPTIONS_SCHEMA({CONF_SYNC_INTERVAL_HOURS: 0, CONF_DELETE_REMOVED: False})
 
     def test_options_schema_rejects_interval_above_max(self) -> None:
         with pytest.raises(vol.Invalid):
-            _OPTIONS_SCHEMA(
-                {CONF_SYNC_INTERVAL_HOURS: 200, CONF_DELETE_REMOVED: False}
-            )
+            _OPTIONS_SCHEMA({CONF_SYNC_INTERVAL_HOURS: 200, CONF_DELETE_REMOVED: False})

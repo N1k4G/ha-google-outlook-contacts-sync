@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -17,10 +19,16 @@ from .dedup import (
     OutlookContact,
     choose_keeper,
     find_duplicate_groups,
+    normalize_email,
 )
-from .google_client import GoogleAuthError, GoogleContactsClient, SyncTokenExpiredError
+from .google_client import GoogleContactsClient, SyncTokenExpiredError
 from .graph_client import GraphContactsClient, MSAuthError
-from .mapping import contact_hash, is_deleted, to_graph_contact
+from .mapping import (
+    contact_hash,
+    is_deleted,
+    to_graph_contact,
+    to_graph_contact_update,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +39,72 @@ class SyncAction(StrEnum):
     CREATE = "create"
     UPDATE = "update"
     DELETE = "delete"
+    # Forget the mapping locally without touching Outlook. Distinct from SKIP,
+    # which must stay genuinely stateless.
+    UNLINK = "unlink"
     SKIP = "skip"
+
+
+@dataclass
+class OutlookSnapshot:
+    """One complete listing of Outlook contacts, taken by a full resync.
+
+    Serves two purposes from a single Graph call: deciding which existing
+    Outlook contact an unmapped Google contact may adopt, and telling whether a
+    contact id we still have mapped exists at all.
+    """
+
+    all_contact_ids: set[str]
+    unclaimed_by_email: dict[str, set[str]]
+
+    @classmethod
+    def build(
+        cls, contacts: list[OutlookContact], mapped_ids: set[str]
+    ) -> OutlookSnapshot:
+        by_email: dict[str, set[str]] = {}
+        for contact in contacts:
+            if not contact.contact_id or contact.contact_id in mapped_ids:
+                # Already owned by another Google contact — never a candidate.
+                continue
+            for email in contact.emails:
+                by_email.setdefault(email, set()).add(contact.contact_id)
+        return cls(
+            all_contact_ids={c.contact_id for c in contacts if c.contact_id},
+            unclaimed_by_email=by_email,
+        )
+
+    def claim_unique(self, emails: set[str], display_name: str) -> str | None:
+        """Claim the one unmapped Outlook contact sharing an email, if unambiguous.
+
+        Matching on name was the previous rule and is deliberately gone: two
+        different people who share a name are common, and adopting on that basis
+        overwrites a stranger's contact with someone else's data.
+        """
+        if not emails:
+            return None
+
+        candidates: set[str] = set()
+        for email in emails:
+            candidates |= self.unclaimed_by_email.get(email, set())
+
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            _LOGGER.warning(
+                "Not adopting an existing Outlook contact for %r: %d unmapped "
+                "contacts share its email address(es); creating a new contact "
+                "instead",
+                display_name,
+                len(candidates),
+            )
+            return None
+
+        claimed = candidates.pop()
+        # Drop it from every email key, not just the one that matched, so it can
+        # never be claimed a second time in this run.
+        for ids in self.unclaimed_by_email.values():
+            ids.discard(claimed)
+        return claimed
 
 
 @dataclass
@@ -103,9 +176,7 @@ class SyncResult:
             "duplicates_removed": self.duplicates_removed,
             "errors": self.errors,
             "duplicates": self.duplicates,
-            "finished_at": (
-                self.finished_at.isoformat() if self.finished_at else None
-            ),
+            "finished_at": (self.finished_at.isoformat() if self.finished_at else None),
             "duration_seconds": self.duration_seconds,
         }
 
@@ -129,9 +200,7 @@ class SyncPlan:
             "to_update": [c.as_dict() for c in self.to_update],
             "to_delete": [c.as_dict() for c in self.to_delete],
             "total": self.total,
-            "finished_at": (
-                self.finished_at.isoformat() if self.finished_at else None
-            ),
+            "finished_at": (self.finished_at.isoformat() if self.finished_at else None),
         }
 
 
@@ -146,6 +215,7 @@ class SyncEngine:
         store: ContactSyncStore,
         delete_removed: bool = False,
         auto_remove_duplicates: bool = False,
+        persist_tokens: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._hass = hass
         self._google = google_client
@@ -153,22 +223,85 @@ class SyncEngine:
         self._store = store
         self._delete_removed = delete_removed
         self._auto_remove_duplicates = auto_remove_duplicates
+        self._persist_tokens_cb = persist_tokens
+        # Serialises every public run. The scheduled coordinator refresh, the
+        # sync/full-sync services, both buttons and the dry run all reach this
+        # one engine and the one store; without this they interleave at every
+        # await and can double-create contacts or cross their sync tokens.
+        self._run_lock = asyncio.Lock()
 
     async def async_sync(self) -> SyncResult:
         """Delta sync pass: apply changed Google contacts to Outlook."""
+        async with self._run_lock:
+            try:
+                return await self._async_sync_unlocked()
+            finally:
+                await self._persist_tokens()
+
+    async def async_full_sync(self) -> SyncResult:
+        """Full reconciliation of every Google contact against Outlook."""
+        async with self._run_lock:
+            try:
+                return await self._async_full_sync_unlocked()
+            finally:
+                await self._persist_tokens()
+
+    async def async_plan(self) -> SyncPlan:
+        """Compute what a sync would do, without applying or persisting.
+
+        Takes the same lock as a real run: a preview computed from a store that
+        is being mutated mid-run describes a state that never existed.
+        """
+        async with self._run_lock:
+            try:
+                return await self._async_plan_unlocked()
+            finally:
+                # A dry run writes nothing to Outlook but still talks to Google,
+                # which can refresh the credentials.
+                await self._persist_tokens()
+
+    async def _persist_tokens(self) -> None:
+        """Save refreshed OAuth state, inside the lock, whatever else happened.
+
+        Runs from a finally block: a token renewed early in a run must survive
+        a later contact write failing. Never raises — replacing an in-flight
+        sync or auth error with a storage error would hide the real cause and
+        break the reauth path.
+        """
+        if self._persist_tokens_cb is None:
+            return
+        try:
+            await self._persist_tokens_cb()
+        except Exception:
+            _LOGGER.exception("Failed to persist refreshed OAuth tokens")
+
+    # ------------------------------------------------------------------
+    # Run implementations — these never take the lock themselves, so they can
+    # call each other. asyncio.Lock is not reentrant.
+    # ------------------------------------------------------------------
+
+    async def _async_sync_unlocked(self) -> SyncResult:
+        """Delta pass, or full reconciliation when there is no usable cursor.
+
+        Without a valid sync token there is no delta to apply, and running the
+        delta pipeline over a full fetch skips adoption, stale-mapping repair
+        and drift correction — the very things a full fetch exists to do.
+        """
+        if self._store.sync_token is None:
+            _LOGGER.debug("No Google sync token stored; running full reconciliation")
+            return await self._async_full_sync_unlocked()
+
         result = SyncResult()
         started = dt_util.utcnow()
 
         try:
             people, new_sync_token = await self._fetch_people(self._store.sync_token)
         except SyncTokenExpiredError:
-            _LOGGER.warning("Google sync token expired; performing full re-sync")
+            _LOGGER.warning(
+                "Google sync token expired; running full reconciliation instead"
+            )
             self._store.sync_token = None
-            people, new_sync_token = await self._fetch_people(None)
-        except (GoogleAuthError, MSAuthError):
-            raise
-        except Exception as exc:
-            return self._fail_fetch(result, started, exc)
+            return await self._async_full_sync_unlocked()
 
         for person in people:
             await self._process(self._decide(person), person, result)
@@ -176,43 +309,45 @@ class SyncEngine:
         if self._auto_remove_duplicates:
             await self._dedupe(result)
 
-        await self._finalize(result, started, new_sync_token)
+        await self._finalize_delta(result, started, new_sync_token)
         return result
 
-    async def async_full_sync(self) -> SyncResult:
-        """Full reconciliation: fetch all Google contacts, adopt matching
-        Outlook contacts by name (so we don't create duplicates), and push any
-        differences. Resets the delta token to the freshly returned one.
+    async def _async_full_sync_unlocked(self) -> SyncResult:
+        """Fetch every Google contact, adopt matching Outlook contacts (so we
+        don't create duplicates), and push any differences.
         """
         result = SyncResult()
         started = dt_util.utcnow()
 
-        try:
-            people, new_sync_token = await self._fetch_people(None)
-        except (GoogleAuthError, MSAuthError):
-            raise
-        except Exception as exc:
-            return self._fail_fetch(result, started, exc)
+        people, new_sync_token = await self._fetch_people(None)
 
-        adopt_index = await self._build_adopt_index()
+        # Captured from the complete fetch before any per-contact work: a Google
+        # contact with no mappable fields is still *present*, and must not be
+        # mistaken for one that was deleted.
+        active_resource_names = {
+            resource_name
+            for person in people
+            if (resource_name := person.get("resourceName"))
+        }
+
+        snapshot = await self._build_snapshot()
 
         for person in people:
+            self._drop_stale_mapping(person, snapshot)
             await self._process(
-                self._decide(person, adopt_index, force=True), person, result
+                self._decide(person, snapshot, force=True), person, result
             )
+
+        await self._reconcile_orphans(active_resource_names, result)
 
         if self._auto_remove_duplicates:
             await self._dedupe(result)
 
-        # A full sync rebuilds state, so adopt the new token regardless of the
-        # previous one (still only when nothing failed).
-        self._store.sync_token = None
-        await self._finalize(result, started, new_sync_token)
+        await self._finalize_full(result, started, new_sync_token)
         _LOGGER.info("Full resync complete: %s", result.summary())
         return result
 
-    async def async_plan(self) -> SyncPlan:
-        """Compute what a delta sync would do, without applying or persisting."""
+    async def _async_plan_unlocked(self) -> SyncPlan:
         plan = SyncPlan()
 
         try:
@@ -251,56 +386,137 @@ class SyncEngine:
             self._google.fetch_contacts, sync_token
         )
 
-    def _fail_fetch(
-        self, result: SyncResult, started: datetime, exc: Exception
-    ) -> SyncResult:
-        _LOGGER.error("Failed to fetch Google contacts: %s", exc)
-        result.failed += 1
-        result.errors.append(f"Google fetch failed: {exc}")
-        result.finished_at = dt_util.utcnow()
-        result.duration_seconds = (result.finished_at - started).total_seconds()
-        return result
-
-    async def _finalize(
+    async def _finalize_delta(
         self, result: SyncResult, started: datetime, new_sync_token: str | None
     ) -> None:
-        # Only advance the delta cursor when the run was clean — otherwise a
-        # failed contact would be skipped forever on subsequent delta syncs.
-        if new_sync_token and result.failed == 0:
-            self._store.sync_token = new_sync_token
-        elif new_sync_token and result.failed:
+        """Advance the delta cursor only on a clean run.
+
+        Keeping the previous token on failure means Google re-delivers the same
+        changes next time, so a failed contact is retried instead of skipped
+        forever.
+        """
+        if result.failed:
             _LOGGER.warning(
-                "Keeping previous sync token: %d contact(s) failed this run",
+                "Keeping previous sync token: %d operation(s) failed this run",
                 result.failed,
             )
+        elif new_sync_token:
+            self._store.sync_token = new_sync_token
+        await self._persist(result, started)
+
+    async def _finalize_full(
+        self, result: SyncResult, started: datetime, new_sync_token: str | None
+    ) -> None:
+        """Set the fresh cursor, or drop it entirely when the run failed.
+
+        The previous token is deliberately *not* restored on failure: a contact
+        that failed reconciliation may have last changed before that cursor, so
+        a later delta would never deliver it again. Clearing it routes the next
+        run back into full reconciliation.
+        """
+        if result.failed:
+            self._store.sync_token = None
+            _LOGGER.warning(
+                "Discarding sync token: %d operation(s) failed during full resync; "
+                "the next run will reconcile in full again",
+                result.failed,
+            )
+        else:
+            self._store.sync_token = new_sync_token
+        await self._persist(result, started)
+
+    async def _persist(self, result: SyncResult, started: datetime) -> None:
         await self._store.async_save()
         result.finished_at = dt_util.utcnow()
         result.duration_seconds = (result.finished_at - started).total_seconds()
 
-    async def _build_adopt_index(self) -> dict[str, list[str]]:
-        """Map name key → unclaimed Outlook contact ids, for full-sync adoption."""
+    async def _reconcile_orphans(
+        self, active_resource_names: set[str], result: SyncResult
+    ) -> None:
+        """Resolve mappings whose Google contact no longer exists.
+
+        Only valid after a fully successful full fetch: *active_resource_names*
+        must be the complete truth, or live contacts would be treated as
+        deleted. Delta runs never call this — they only ever see a slice.
+        """
+        orphaned = self._store.all_resource_names() - active_resource_names
+        if not orphaned:
+            return
+
+        for resource_name in sorted(orphaned):
+            contact_id = self._store.lookup(resource_name)
+
+            if not self._delete_removed or contact_id is None:
+                # Untrack only; the user opted to keep Outlook contacts.
+                self._store.delete_mapping(resource_name)
+                continue
+
+            try:
+                await self._hass.async_add_executor_job(
+                    self._graph.delete_contact, contact_id
+                )
+            except MSAuthError:
+                raise
+            except Exception as exc:
+                # Keep the mapping so the delete is retried next run.
+                _LOGGER.error(
+                    "Failed to delete orphaned Outlook contact %s: %s", contact_id, exc
+                )
+                result.failed += 1
+                result.errors.append(f"{resource_name}: orphan delete failed: {exc}")
+                continue
+
+            self._store.delete_mapping(resource_name)
+            result.deleted += 1
+
+    async def _build_snapshot(self) -> OutlookSnapshot:
+        """Load every Outlook contact once, for adoption and existence checks.
+
+        A failure here propagates: acting on a partial listing would create
+        duplicates for contacts that merely failed to load.
+        """
         raw = await self._hass.async_add_executor_job(
             self._graph.list_contacts_raw, SELECT_FIELDS
         )
-        index: dict[str, list[str]] = {}
-        for item in raw:
-            contact = OutlookContact.from_graph(item)
-            key = contact.name_key()
-            if key and contact.contact_id not in self._store.mapped_ids():
-                index.setdefault(key, []).append(contact.contact_id)
-        return index
+        contacts = [OutlookContact.from_graph(item) for item in raw]
+        return OutlookSnapshot.build(contacts, self._store.mapped_ids())
+
+    def _drop_stale_mapping(
+        self, person: dict[str, Any], snapshot: OutlookSnapshot
+    ) -> None:
+        """Forget a mapping whose Outlook contact no longer exists.
+
+        Without this, a contact the user deleted in Outlook is patched by id on
+        every full resync, fails every time, and is never recreated. Afterwards
+        the Google contact is simply unmapped, so it goes through the normal
+        adoption-or-create path.
+
+        Only safe during a full resync, where the snapshot is a complete and
+        verified listing — a delta sync must not pay for per-contact existence
+        checks, and a partial listing would delete live mappings.
+        """
+        resource_name: str = person.get("resourceName", "")
+        mapped_id = self._store.lookup(resource_name)
+        if mapped_id is not None and mapped_id not in snapshot.all_contact_ids:
+            _LOGGER.warning(
+                "Outlook contact %s mapped to %s no longer exists; unlinking so it "
+                "can be recreated",
+                mapped_id,
+                resource_name,
+            )
+            self._store.delete_mapping(resource_name)
 
     def _decide(
         self,
         person: dict[str, Any],
-        adopt_index: dict[str, list[str]] | None = None,
+        snapshot: OutlookSnapshot | None = None,
         force: bool = False,
     ) -> _Decision:
         """Determine the action for one person without performing it.
 
-        When *adopt_index* is provided (full sync), an unmapped Google contact
-        whose name matches an existing Outlook contact adopts that contact
-        instead of creating a new one — preventing duplicates.
+        When *snapshot* is provided (full resync), an unmapped Google contact
+        may adopt an existing Outlook contact instead of creating a duplicate —
+        but only on an unambiguous email match, never on name alone.
 
         When *force* is True the stored hash is ignored and existing contacts
         are always updated.  Used by full resync to recover from cases where
@@ -311,44 +527,53 @@ class SyncEngine:
         existing_id = self._store.lookup(resource_name)
 
         if is_deleted(person):
-            if existing_id and self._delete_removed:
+            label = _display_name(None, resource_name)
+            if not existing_id:
+                return _Decision(SyncAction.SKIP, resource_name, label)
+            if self._delete_removed:
                 return _Decision(
-                    SyncAction.DELETE,
-                    resource_name,
-                    _display_name(None, resource_name),
-                    existing_id=existing_id,
+                    SyncAction.DELETE, resource_name, label, existing_id=existing_id
                 )
-            return _Decision(
-                SyncAction.SKIP, resource_name, _display_name(None, resource_name)
+            # Keep the Outlook contact, but stop tracking it: the Google source
+            # is gone, so the mapping and hash can never be meaningful again and
+            # would otherwise be counted as a synced contact forever.
+            return _Decision(SyncAction.UNLINK, resource_name, label)
+
+        create_contact = to_graph_contact(person)
+        update_contact = to_graph_contact_update(person)
+        display_name = _display_name(create_contact, resource_name)
+
+        # Change detection runs on the authoritative state so that removing the
+        # last value of a field still registers as a change.
+        current_hash = contact_hash(update_contact)
+
+        if existing_id is None and snapshot is not None:
+            existing_id = snapshot.claim_unique(
+                _emails_of(create_contact), display_name
             )
 
-        graph_contact = to_graph_contact(person)
-        display_name = _display_name(graph_contact, resource_name)
-        if not graph_contact:
-            return _Decision(SyncAction.SKIP, resource_name, display_name)
-
-        current_hash = contact_hash(graph_contact)
-
-        if existing_id is None and adopt_index is not None:
-            existing_id = _claim_adopt(adopt_index, display_name)
-
         if existing_id is None:
+            if not create_contact:
+                # Nothing mappable and nothing in Outlook yet — nothing to do.
+                return _Decision(SyncAction.SKIP, resource_name, display_name)
             return _Decision(
                 SyncAction.CREATE,
                 resource_name,
                 display_name,
-                graph_contact=graph_contact,
+                graph_contact=create_contact,
                 content_hash=current_hash,
             )
 
         if not force and self._store.get_hash(resource_name) == current_hash:
             return _Decision(SyncAction.SKIP, resource_name, display_name)
 
+        # A mapped contact is updated even when every supported Google field is
+        # now empty — that is exactly the case that must clear Outlook.
         return _Decision(
             SyncAction.UPDATE,
             resource_name,
             display_name,
-            graph_contact=graph_contact,
+            graph_contact=update_contact,
             existing_id=existing_id,
             content_hash=current_hash,
         )
@@ -398,6 +623,13 @@ class SyncEngine:
             )
             self._store.delete_mapping(decision.resource_name)
             result.deleted += 1
+        elif decision.action is SyncAction.UNLINK:
+            _LOGGER.debug(
+                "Untracking %s; Google contact removed and delete_removed is off",
+                decision.resource_name,
+            )
+            self._store.delete_mapping(decision.resource_name)
+            result.skipped += 1
         else:
             result.skipped += 1
 
@@ -407,8 +639,13 @@ class SyncEngine:
             raw = await self._hass.async_add_executor_job(
                 self._graph.list_contacts_raw, SELECT_FIELDS
             )
+        except MSAuthError:
+            # Must reach the coordinator so the reauth flow starts; a generic
+            # handler here would let an expired token pass as a clean run.
+            raise
         except Exception as exc:
             _LOGGER.error("Failed to list Outlook contacts for dedup: %s", exc)
+            result.failed += 1
             result.errors.append(f"Dedup listing failed: {exc}")
             return
 
@@ -417,7 +654,27 @@ class SyncEngine:
         mapped_ids = self._store.mapped_ids()
 
         for group in groups:
+            tracked_in_group = {
+                contact.contact_id
+                for contact in group.contacts
+                if contact.contact_id in mapped_ids
+            }
+            if len(tracked_in_group) > 1:
+                # Merging these would repoint several Google resources onto one
+                # Outlook contact, after which they overwrite each other on
+                # every sync. Counting group members instead of *tracked* members
+                # would miss this.
+                _LOGGER.warning(
+                    "Not deduplicating %r: %d of its contacts are already tracked "
+                    "by different Google contacts, so merging them would corrupt "
+                    "the mapping",
+                    group.key,
+                    len(tracked_in_group),
+                )
+                continue
+
             keeper = choose_keeper(group, mapped_ids)
+            removed_from_group = 0
             for contact in group.contacts:
                 if contact.contact_id == keeper.contact_id:
                     continue
@@ -425,15 +682,19 @@ class SyncEngine:
                     await self._hass.async_add_executor_job(
                         self._graph.delete_contact, contact.contact_id
                     )
+                except MSAuthError:
+                    raise
                 except Exception as exc:
+                    # Independent groups are unaffected, so keep going.
                     _LOGGER.error(
                         "Failed to delete duplicate %s: %s", contact.contact_id, exc
                     )
+                    result.failed += 1
                     result.errors.append(f"Dedup delete failed: {exc}")
                     continue
                 self._store.repoint_mapping(contact.contact_id, keeper.contact_id)
                 result.duplicates_removed += 1
-                result.duplicates.append(group.key)
+                removed_from_group += 1
                 _LOGGER.warning(
                     "Removed duplicate Outlook contact %s (name=%r); kept %s",
                     contact.contact_id,
@@ -441,21 +702,22 @@ class SyncEngine:
                     keeper.contact_id,
                 )
 
-
-def _claim_adopt(
-    adopt_index: dict[str, list[str]], display_name: str
-) -> str | None:
-    """Pop and return an unclaimed Outlook contact id matching the name."""
-    key = " ".join(display_name.split()).casefold()
-    candidates = adopt_index.get(key)
-    if candidates:
-        return candidates.pop(0)
-    return None
+            # One entry per group actually acted on, not one per deleted contact.
+            if removed_from_group:
+                result.duplicates.append(group.key)
 
 
-def _display_name(
-    graph_contact: dict[str, Any] | None, resource_name: str
-) -> str:
+def _emails_of(graph_contact: dict[str, Any]) -> set[str]:
+    """Normalized email addresses of a mapped Graph contact body."""
+    entries = graph_contact.get("emailAddresses") or []
+    return {
+        normalized
+        for entry in entries
+        if (normalized := normalize_email(str(entry.get("address") or "")))
+    }
+
+
+def _display_name(graph_contact: dict[str, Any] | None, resource_name: str) -> str:
     """Best-effort human label for a contact change."""
     if graph_contact:
         if display := graph_contact.get("displayName"):

@@ -8,9 +8,11 @@ from custom_components.google_outlook_contacts_sync.const import (
     BIRTHDAY_PLACEHOLDER_YEAR,
 )
 from custom_components.google_outlook_contacts_sync.sync.mapping import (
+    MANAGED_GRAPH_FIELDS,
     contact_hash,
     is_deleted,
     to_graph_contact,
+    to_graph_contact_update,
 )
 
 
@@ -30,11 +32,14 @@ class TestToGraphContact:
         assert "jane.example@personal.example" in addresses
         assert "jane.example@work.example" in addresses
 
-    def test_email_type_mapping(self, person_full: dict[str, Any]) -> None:
+    def test_email_name_is_the_contact_name_not_a_type_label(
+        self, person_full: dict[str, Any]
+    ) -> None:
+        """Graph's emailAddresses[].name is a display name (#29)."""
         result = to_graph_contact(person_full)
         emails = {e["address"]: e["name"] for e in result["emailAddresses"]}
-        assert emails["jane.example@personal.example"] == "personal"
-        assert emails["jane.example@work.example"] == "work"
+        assert emails["jane.example@personal.example"] == "Jane Example"
+        assert emails["jane.example@work.example"] == "Jane Example"
 
     def test_full_person_phones(self, person_full: dict[str, Any]) -> None:
         result = to_graph_contact(person_full)
@@ -108,9 +113,7 @@ class TestToGraphContact:
         assert result["homePhones"] == ["+49123"]
 
     def test_birthday_missing_month_skipped(self) -> None:
-        person = {
-            "birthdays": [{"metadata": {"primary": True}, "date": {"day": 5}}]
-        }
+        person = {"birthdays": [{"metadata": {"primary": True}, "date": {"day": 5}}]}
         result = to_graph_contact(person)
         assert "birthday" not in result
 
@@ -161,10 +164,32 @@ class TestToGraphContact:
         result = to_graph_contact(person)
         assert result["mobilePhone"] == "+49 170 1111111"
 
-    def test_unknown_email_type_mapped_to_other(self) -> None:
+    def test_email_without_contact_name_omits_name(self) -> None:
         person = {"emailAddresses": [{"value": "x@example.com", "type": "fax"}]}
         result = to_graph_contact(person)
-        assert result["emailAddresses"][0]["name"] == "other"
+        assert result["emailAddresses"][0] == {"address": "x@example.com"}
+
+    def test_google_email_types_never_become_name_labels(self) -> None:
+        person = {
+            "names": [{"displayName": "Real Person"}],
+            "emailAddresses": [
+                {"value": "h@example.com", "type": "home"},
+                {"value": "w@example.com", "type": "work"},
+                {"value": "o@example.com", "type": "other"},
+            ],
+        }
+        result = to_graph_contact(person)
+        names = {e.get("name") for e in result["emailAddresses"]}
+        assert names == {"Real Person"}
+        assert not names & {"personal", "work", "other"}
+
+    def test_email_name_falls_back_to_given_and_family(self) -> None:
+        person = {
+            "names": [{"givenName": "No", "familyName": "Display"}],
+            "emailAddresses": [{"value": "x@example.com"}],
+        }
+        result = to_graph_contact(person)
+        assert result["emailAddresses"][0]["name"] == "No Display"
 
     def test_address_business_type(self) -> None:
         person = {
@@ -187,6 +212,110 @@ class TestToGraphContact:
         result = to_graph_contact(person)
         assert result["companyName"] == "ACME"
         assert "jobTitle" not in result
+
+
+def _addr(addr_type: str, city: str) -> dict[str, Any]:
+    return {"type": addr_type, "streetAddress": f"{city} St 1", "city": city}
+
+
+class TestAddressTypes:
+    def test_home_address(self) -> None:
+        result = to_graph_contact({"addresses": [_addr("home", "Berlin")]})
+        assert result["homeAddress"]["city"] == "Berlin"
+        assert "businessAddress" not in result
+        assert "otherAddress" not in result
+
+    def test_work_address(self) -> None:
+        result = to_graph_contact({"addresses": [_addr("work", "Munich")]})
+        assert result["businessAddress"]["city"] == "Munich"
+        assert "homeAddress" not in result
+        assert "otherAddress" not in result
+
+    def test_other_address_is_not_business(self) -> None:
+        """Regression for #32: 'other' used to land in businessAddress."""
+        result = to_graph_contact({"addresses": [_addr("other", "Hamburg")]})
+        assert result["otherAddress"]["city"] == "Hamburg"
+        assert "businessAddress" not in result
+
+    def test_unknown_type_goes_to_other(self) -> None:
+        result = to_graph_contact({"addresses": [_addr("vacation", "Sylt")]})
+        assert result["otherAddress"]["city"] == "Sylt"
+        assert "businessAddress" not in result
+
+    def test_all_three_slots_populate_independently(self) -> None:
+        result = to_graph_contact(
+            {
+                "addresses": [
+                    _addr("home", "Berlin"),
+                    _addr("work", "Munich"),
+                    _addr("other", "Hamburg"),
+                ]
+            }
+        )
+        assert result["homeAddress"]["city"] == "Berlin"
+        assert result["businessAddress"]["city"] == "Munich"
+        assert result["otherAddress"]["city"] == "Hamburg"
+
+    def test_first_address_per_slot_wins(self) -> None:
+        result = to_graph_contact(
+            {"addresses": [_addr("home", "First"), _addr("home", "Second")]}
+        )
+        assert result["homeAddress"]["city"] == "First"
+
+    def test_empty_address_does_not_consume_the_slot(self) -> None:
+        result = to_graph_contact(
+            {"addresses": [{"type": "home"}, _addr("home", "Berlin")]}
+        )
+        assert result["homeAddress"]["city"] == "Berlin"
+
+
+class TestAuthoritativeUpdatePayload:
+    def test_missing_phones_are_explicitly_cleared(self) -> None:
+        result = to_graph_contact_update({"names": [{"displayName": "A"}]})
+        assert result["homePhones"] == []
+        assert result["businessPhones"] == []
+        assert result["mobilePhone"] is None
+
+    def test_missing_emails_cleared(self) -> None:
+        assert to_graph_contact_update({})["emailAddresses"] == []
+
+    def test_missing_birthday_cleared(self) -> None:
+        assert to_graph_contact_update({})["birthday"] is None
+
+    def test_missing_addresses_cleared(self) -> None:
+        result = to_graph_contact_update({})
+        assert result["homeAddress"] is None
+        assert result["businessAddress"] is None
+        assert result["otherAddress"] is None
+
+    def test_missing_organization_cleared(self) -> None:
+        result = to_graph_contact_update({})
+        assert result["companyName"] is None
+        assert result["jobTitle"] is None
+        assert result["department"] is None
+
+    def test_every_managed_field_is_present(self) -> None:
+        result = to_graph_contact_update({})
+        assert set(result) == set(MANAGED_GRAPH_FIELDS)
+
+    def test_populated_values_survive(self, person_full: dict[str, Any]) -> None:
+        result = to_graph_contact_update(person_full)
+        assert result["givenName"] == "Jane"
+        assert result["mobilePhone"] == "+49 170 1234567"
+        assert result["homeAddress"]["city"] == "Berlin"
+        assert result["businessAddress"] is None
+
+    def test_create_payload_stays_sparse(self, person_full: dict[str, Any]) -> None:
+        result = to_graph_contact(person_full)
+        assert "businessPhones" not in result
+        assert "businessAddress" not in result
+        assert "otherAddress" not in result
+
+    def test_empty_person_create_is_empty_but_update_clears_all(self) -> None:
+        assert to_graph_contact({}) == {}
+        update = to_graph_contact_update({})
+        assert len(update) == len(MANAGED_GRAPH_FIELDS)
+        assert all(v in ([], None) for v in update.values())
 
 
 class TestIsDeleted:

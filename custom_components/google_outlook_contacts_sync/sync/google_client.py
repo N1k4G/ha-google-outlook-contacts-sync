@@ -100,9 +100,7 @@ class GoogleContactsClient:
         return all_people, next_sync_token
 
     @classmethod
-    def from_token_dict(
-        cls, token_dict: dict[str, Any]
-    ) -> GoogleContactsClient:
+    def from_token_dict(cls, token_dict: dict[str, Any]) -> GoogleContactsClient:
         """Build a client from a serialized token dict."""
         creds = Credentials(  # type: ignore[no-untyped-call]
             token=token_dict.get("token"),
@@ -110,8 +108,8 @@ class GoogleContactsClient:
             token_uri=token_dict.get(
                 "token_uri", "https://oauth2.googleapis.com/token"
             ),
-            client_id=token_dict["client_id"],
-            client_secret=token_dict["client_secret"],
+            client_id=token_dict.get("client_id"),
+            client_secret=token_dict.get("client_secret"),
             scopes=[GOOGLE_SCOPE],
         )
         return cls(creds)

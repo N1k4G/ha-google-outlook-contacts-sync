@@ -15,7 +15,7 @@
       },
       "google_credentials": {
         "title": "Google Account — App Credentials",
-        "description": "Enter the Client ID and Client Secret from your Google Cloud OAuth 2.0 Desktop client.",
+        "description": "Enter the Client ID and Client Secret from your Google Cloud OAuth 2.0 Web application client.",
         "data": {
           "google_client_id": "Google Client ID",
           "google_client_secret": "Google Client Secret"
@@ -34,12 +34,14 @@
       "ms_auth_failed": "Microsoft authorization failed. Check your client credentials and try again.",
       "google_auth_failed": "Google authorization failed. Check your client credentials and the authorization code.",
       "cannot_connect": "Unable to connect. Check your credentials and network connection.",
-      "unknown": "Unexpected error. Check the Home Assistant logs."
+      "unknown": "Unexpected error. Check the Home Assistant logs.",
+      "ms_url_failed": "Could not build the Microsoft sign-in URL. Check your credentials and the Home Assistant logs."
     },
     "abort": {
       "already_configured": "This integration is already configured.",
       "ms_auth_timeout": "Microsoft authorization timed out. Please restart the setup.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "missing_external_url": "Home Assistant external URL is not configured. Go to Settings → System → Network and set the Home Assistant URL, then try again."
     }
   },
   "options": {
@@ -56,20 +58,40 @@
   },
   "entity": {
     "sensor": {
-      "last_sync": { "name": "Last sync" },
-      "last_sync_result": { "name": "Last sync result" },
-      "next_sync": { "name": "Next sync" },
-      "synced_contacts": { "name": "Synced contacts" },
-      "duplicates_removed": { "name": "Duplicates removed" },
-      "dry_run_preview": { "name": "Dry-run preview" }
+      "last_sync": {
+        "name": "Last sync"
+      },
+      "last_sync_result": {
+        "name": "Last sync result"
+      },
+      "next_sync": {
+        "name": "Next sync"
+      },
+      "synced_contacts": {
+        "name": "Synced contacts"
+      },
+      "duplicates_removed": {
+        "name": "Duplicates removed"
+      },
+      "dry_run_preview": {
+        "name": "Dry-run preview"
+      }
     },
     "binary_sensor": {
-      "sync_problem": { "name": "Sync problem" }
+      "sync_problem": {
+        "name": "Sync problem"
+      }
     },
     "button": {
-      "sync_now": { "name": "Sync now" },
-      "full_resync": { "name": "Full resync" },
-      "run_dry_run": { "name": "Run dry-run" }
+      "sync_now": {
+        "name": "Sync now"
+      },
+      "full_resync": {
+        "name": "Full resync"
+      },
+      "run_dry_run": {
+        "name": "Run dry-run"
+      }
     }
   },
   "services": {
@@ -79,7 +101,7 @@
     },
     "full_sync": {
       "name": "Full Resync",
-      "description": "Run a full reconciliation: adopt existing Outlook contacts by name, fix drift, and reset the delta token."
+      "description": "Run a full reconciliation: adopt existing Outlook contacts on a unique email match, fix drift, reconcile removed contacts, and reset the delta token."
     }
   }
 }

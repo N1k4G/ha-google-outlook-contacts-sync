@@ -15,7 +15,7 @@ One-way sync from **Google Contacts → Microsoft Outlook** (personal Microsoft 
 - Delta sync via Google People API `syncToken` — only changed contacts are transferred after the first full run.
 - Birthdays synced as a contact field; contacts without a year use the 1604 placeholder (Outlook's own convention, shown as day/month only).
 - Configurable sync interval and optional deletion of Outlook contacts when removed from Google.
-- Persists the contact ID mapping and sync token in HA's encrypted storage — survives restarts without duplication.
+- Persists the contact ID mapping and sync token in HA's `.storage/` directory — survives restarts without duplication.
 - `sync_now` service for immediate sync from automations or the Developer Tools.
 - Sensors and buttons for monitoring and control (last sync, last result, next sync, synced count, sync-problem alert, sync-now button) plus an optional dry-run preview.
 - German and English UI.
@@ -51,6 +51,11 @@ You need two sets of OAuth credentials — one for Microsoft, one for Google. Bo
 ---
 
 ## Installation
+
+**Requires Home Assistant 2024.12.0 or newer.** The integration uses
+`ConfigFlowResult` (2024.4), the `config_entry` argument to
+`DataUpdateCoordinator` (2024.11/12) and the `single_config_entry` manifest flag
+(2024.11); on older versions setup fails at import.
 
 ### HACS (custom repository)
 
@@ -119,7 +124,9 @@ If Outlook drifts out of sync — for example contacts are missing, or a past ru
 
 The **Full resync** button (and `full_sync` service) fetches **all** Google contacts, then:
 
-- **Adopts** existing Outlook contacts by name instead of creating new ones, so reconciliation does not produce duplicates.
+- **Adopts** an existing Outlook contact instead of creating a new one when exactly one not-yet-tracked Outlook contact shares an email address with the Google contact. Matching is on the normalized address only — a matching *name* is never enough, since two different people commonly share one.
+- **Repairs** mappings whose Outlook contact was deleted by hand, recreating or re-adopting the contact.
+- **Reconciles** contacts removed from Google: deleting them in Outlook when *Delete removed contacts* is on, otherwise just untracking them.
 - Pushes any field differences and recreates anything genuinely missing.
 - Resets the delta token so subsequent scheduled runs are clean.
 
@@ -128,6 +135,8 @@ Run this once after upgrading, or whenever the contact counts look wrong.
 ### Duplicate handling
 
 With **Auto-remove duplicate contacts** enabled, each sync lists all Outlook contacts, groups them by **normalized name**, and deletes all but one contact per group (keeping the one already tracked, else the most complete / most recently modified). Repointed mappings keep the kept contact linked to Google.
+
+A group containing **more than one contact already tracked by this integration is skipped entirely** and logged as a warning. Merging those would leave several Google contacts pointing at a single Outlook contact, which then overwrite each other on every sync. Auto-dedup therefore only removes untracked duplicates around at most one tracked contact, or deduplicates groups with no tracked contacts at all.
 
 > ⚠️ **Matching is name-only and removal is automatic.** Two genuinely different people who share a name will be treated as duplicates and one copy will be deleted on every sync. The dry-run preview does **not** cover dedup, so leave this off unless you understand the risk — test on a non-critical account if unsure. Every deletion is logged at WARNING level and counted by the **Duplicates removed** sensor.
 
@@ -145,7 +154,7 @@ service: google_outlook_contacts_sync.sync_now
 
 ### `google_outlook_contacts_sync.full_sync`
 
-Runs a full reconciliation (adopt-by-name, fix drift, reset delta token). No parameters required.
+Runs a full reconciliation (adopt on a unique email match, fix drift, reconcile removals, reset delta token). No parameters required.
 
 ```yaml
 service: google_outlook_contacts_sync.full_sync
@@ -161,7 +170,8 @@ If either token expires or is revoked, the integration raises a **Repair** notif
 
 ## Security
 
-- **No secrets are stored in this repository.** All credentials are entered via the HA config flow and stored in HA's encrypted `.storage/` directory on your device.
+- **No secrets are stored in this repository.** All credentials are entered via the HA config flow and stored in HA's `.storage/` directory on your device.
+- **`.storage/` is not encrypted.** Home Assistant writes config entries and this integration's mapping as plain JSON, protected only by file-system permissions. Your Microsoft and Google client secrets and OAuth refresh tokens are readable by anything that can read the config directory — **including any backup of it**. Treat backups of your HA configuration as secrets.
 - Token caches, `.env` files, and `credentials.json` are listed in `.gitignore`.
 - `detect-secrets` and Gitleaks run as pre-commit hooks.
 
@@ -170,6 +180,25 @@ If either token expires or is revoked, the integration raises a **Repair** notif
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Disclaimer — trademarks and API compliance
+
+This project is an unofficial, community-maintained integration and is **not
+affiliated with, endorsed by, or sponsored by** Google LLC or Microsoft
+Corporation. "Google", "Google Contacts", "Outlook" and "Microsoft" are
+trademarks of their respective owners and are used here for descriptive
+purposes only.
+
+Each user creates and uses their **own** Google Cloud and Microsoft Entra OAuth
+credentials. Responsibility for complying with the [Google API Services User
+Data Policy](https://developers.google.com/terms/api-services-user-data-policy)
+— including any OAuth app verification it requires — and with Microsoft's terms
+lies with the user operating those credentials.
+
+The integration icon is original artwork and is not derived from any
+third-party logo.
 
 ---
 
