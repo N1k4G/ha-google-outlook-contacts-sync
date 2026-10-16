@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tokens replaced from outside a run are now left alone.
 - After a failed sign-in during setup, reauth or reconfigure, the retry form
   keeps the client ID, and client secrets are entered in masked fields.
+- The manifest now accepts `google-api-python-client` 2.71.0, the version
+  Home Assistant pins for its own Google integrations. The previous
+  `>=2.100.0` failed hassfest and could force an upgrade under them.
 
 ## [1.1.0] - 2026-07-27
 
