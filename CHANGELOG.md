@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrade notes
+- **Minimum Home Assistant version is now 2025.8.0.** The options flow now
+  uses `OptionsFlowWithReload` instead of a config entry update listener. HA
+  2026.12 turns an update listener combined with the reauth/reconfigure reload
+  helper into an error. HACS will not offer this update to installations below
+  2025.8.0; if you installed manually, check your version before updating.
+
+### Added
+- **Reconfigure flow for app credentials** (#36). *Settings → Devices &
+  Services → Google Outlook Contacts Sync → Reconfigure* changes the Microsoft
+  and Google client IDs and secrets without removing the integration, so
+  tokens, the contact mapping and the sync token are kept. A secret left empty
+  stays unchanged. Before anything is saved, a new secret is validated by
+  redeeming the stored refresh token with it: a secret the provider rejects is
+  reported in the form and nothing is written; a refresh token that can no
+  longer be redeemed, or a changed client ID, leads into that provider's
+  sign-in.
+- README section *Rotating or changing client secrets*.
+
+### Fixed
+- **Re-authorization no longer loops on a revoked or expired client secret**
+  (#36). The re-authentication prompt now accepts a new secret for the affected
+  provider (empty keeps the stored one). Previously it always reused the stored
+  secret, so the code exchange failed again, and the only way out was deleting
+  the integration or editing `.storage/core.config_entries` by hand.
+- Re-authorization replaced the whole entry data and dropped keys it does not
+  manage, such as a legacy `delete_removed`; it now only writes what it
+  changed.
+- A sync still running when a reauth or reconfigure finished could write its
+  old token back over the new one before the reload, undoing the new sign-in.
+  Tokens replaced from outside a run are now left alone.
+- After a failed sign-in during setup, reauth or reconfigure, the retry form
+  keeps the client ID, and client secrets are entered in masked fields.
+- The manifest now accepts `google-api-python-client` 2.71.0, the version
+  Home Assistant pins for its own Google integrations. The previous
+  `>=2.100.0` failed hassfest and could force an upgrade under them.
+
 ## [1.1.0] - 2026-07-27
 
 ### Upgrade notes

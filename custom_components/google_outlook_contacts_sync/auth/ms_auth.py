@@ -20,6 +20,7 @@ from O365 import Account  # type: ignore[import-untyped]
 from O365.utils.token import BaseTokenBackend  # type: ignore[import-untyped]
 
 from ..const import MS_AUTH_CALLBACK_PATH, MS_SCOPES
+from . import CredentialCheck, CredentialStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,6 +121,59 @@ def request_token(
     except Exception:
         _LOGGER.exception("Failed to exchange MS OAuth code for tokens")
         return False
+
+
+# Entra rejects the client itself: a wrong or expired secret (AADSTS7000215,
+# AADSTS7000222) or an unknown application (AADSTS700016).
+_MS_INVALID_CLIENT_ERRORS = frozenset({"invalid_client", "unauthorized_client"})
+# Transient on Entra's side; says nothing about the credential.
+_MS_TRANSIENT_ERRORS = frozenset({"temporarily_unavailable", "server_error"})
+
+
+def check_credentials(
+    client_id: str,
+    client_secret: str,
+    token_dict: dict[str, Any] | None,
+) -> CredentialCheck:
+    """Redeem the stored refresh token with the given client credential.
+
+    The refresh is forced: a still-valid cached access token would otherwise be
+    returned without ever presenting the secret to Entra. Runs on a throwaway
+    backend, so a failed check leaves the caller's token untouched.
+    """
+    try:
+        account, backend = build_account(client_id, client_secret, token_dict)
+        if not account.is_authenticated:
+            return CredentialCheck(CredentialStatus.REAUTHORIZE)
+        msal_client = account.con.msal_client
+        accounts = msal_client.get_accounts()
+        scopes = backend.get_token_scopes(remove_reserved=True)
+        if not accounts or not scopes:
+            return CredentialCheck(CredentialStatus.REAUTHORIZE)
+        result = msal_client.acquire_token_silent_with_error(
+            scopes=scopes,
+            account=accounts[0],
+            force_refresh=True,
+        )
+    except Exception as exc:
+        _LOGGER.warning("Microsoft credential check failed: %s", type(exc).__name__)
+        return CredentialCheck(CredentialStatus.CANNOT_CONNECT)
+
+    if not result:
+        # No refresh token in the cache belongs to this client id.
+        return CredentialCheck(CredentialStatus.REAUTHORIZE)
+    error = result.get("error")
+    if error in _MS_INVALID_CLIENT_ERRORS:
+        return CredentialCheck(CredentialStatus.INVALID_CLIENT)
+    if error in _MS_TRANSIENT_ERRORS:
+        return CredentialCheck(CredentialStatus.CANNOT_CONNECT)
+    if error:
+        # invalid_grant, interaction_required, ...: the refresh token is spent.
+        _LOGGER.info("Microsoft refresh token rejected (%s)", error)
+        return CredentialCheck(CredentialStatus.REAUTHORIZE)
+
+    backend.save_token()
+    return CredentialCheck(CredentialStatus.VALID, backend.get_token_dict())
 
 
 def build_redirect_uri(ha_external_url: str) -> str:

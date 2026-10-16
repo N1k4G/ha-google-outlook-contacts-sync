@@ -20,7 +20,6 @@ from .const import (
     CONF_MS_CLIENT_SECRET,
     DATA_COORDINATOR,
     DATA_DRY_RUN_COORDINATOR,
-    DATA_OPTIONS_SNAPSHOT,
     DATA_REAUTH_PROVIDER,
     DATA_STORE,
     DEFAULT_AUTO_REMOVE_DUPLICATES,
@@ -43,6 +42,9 @@ PLATFORMS: list[Platform] = [
     Platform.BUTTON,
     Platform.SENSOR,
 ]
+
+# The entry keys holding each provider's OAuth state.
+_TOKEN_KEYS = ("ms_token", "google_token")
 
 # Everything needed to rebuild a Google client; without these the stored token
 # is unusable and only a fresh authorization can help.
@@ -106,8 +108,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_AUTO_REMOVE_DUPLICATES, DEFAULT_AUTO_REMOVE_DUPLICATES
     )
 
+    # The tokens as this runtime last saw them in the entry; see
+    # _async_persist_tokens.
+    known_tokens = {key: data.get(key) for key in _TOKEN_KEYS}
+
     async def _persist_tokens() -> None:
-        await _async_persist_tokens(hass, entry, ms_backend, google_client)
+        await _async_persist_tokens(
+            hass, entry, ms_backend, google_client, known_tokens
+        )
 
     engine = SyncEngine(
         hass,
@@ -125,12 +133,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_COORDINATOR: coordinator,
         DATA_DRY_RUN_COORDINATOR: dry_run_coordinator,
         DATA_STORE: store,
-        DATA_OPTIONS_SNAPSHOT: dict(entry.options),
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+    # No update listener: the options flow reloads on a real options change
+    # (OptionsFlowWithReload) and reauth/reconfigure reload through their own
+    # abort helper, so the token writes after each run never trigger a reload.
     _async_register_services(hass)
 
     # No cursor means there is nothing to apply a delta against, so the first
@@ -173,28 +182,12 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await store.async_remove()
 
 
-async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload only when the user's options actually changed.
-
-    HA calls update listeners for any entry change, including the token writes
-    made after each run. Reloading on those would start a sync, which can
-    refresh a token, which writes the entry again — a loop. Comparing against
-    the snapshot taken at setup distinguishes the two deterministically, unlike
-    an "ignore the next update" flag, which races when updates arrive quickly.
-    """
-    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if runtime is None:
-        return
-    if runtime.get(DATA_OPTIONS_SNAPSHOT) == dict(entry.options):
-        return
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
 async def _async_persist_tokens(
     hass: HomeAssistant,
     entry: ConfigEntry,
     ms_backend: HAStoreTokenBackend,
     google_client: GoogleContactsClient,
+    known_tokens: dict[str, Any],
 ) -> None:
     """Write back OAuth state that was refreshed at runtime.
 
@@ -204,19 +197,29 @@ async def _async_persist_tokens(
 
     Both providers are written in a single update so one run produces at most
     one entry write, and nothing is written when nothing changed.
+
+    *known_tokens* holds each token as this runtime last saw it in the entry
+    and is updated on every write. A stored token that differs from it was
+    replaced from outside -- a reauth or reconfigure finished while this run
+    was in flight and the reload is pending -- so it is left alone: writing
+    this runtime's copy back would undo the new sign-in or pair new client
+    credentials with the old client's tokens.
     """
     new_data = dict(entry.data)
     changed = False
 
-    current_ms = ms_backend.get_token_dict()
-    if current_ms and current_ms != entry.data.get("ms_token"):
-        new_data["ms_token"] = current_ms
-        changed = True
-
-    current_google = google_client.get_token_dict()
-    if current_google and current_google != entry.data.get("google_token"):
-        new_data["google_token"] = current_google
-        changed = True
+    for key, current in (
+        ("ms_token", ms_backend.get_token_dict()),
+        ("google_token", google_client.get_token_dict()),
+    ):
+        stored = entry.data.get(key)
+        if stored != known_tokens.get(key):
+            _LOGGER.debug("%s was replaced during the run; not overwriting it", key)
+            continue
+        if current and current != stored:
+            new_data[key] = current
+            known_tokens[key] = current
+            changed = True
 
     if changed:
         _LOGGER.debug("Persisting refreshed OAuth token(s) to the config entry")
