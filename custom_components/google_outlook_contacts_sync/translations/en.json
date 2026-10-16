@@ -27,7 +27,37 @@
       },
       "reauth_confirm": {
         "title": "Re-authorize Google Account",
-        "description": "Your Google authorization has expired or been revoked. Click Submit to sign in again with your Google account and restore contact sync."
+        "description": "Your Google authorization has expired or been revoked. If you replaced the client secret of your Google Cloud OAuth client, enter the new one below. Click Submit to sign in again with your Google account and restore contact sync.",
+        "data": {
+          "google_client_secret": "New Google Client Secret (optional)"
+        },
+        "data_description": {
+          "google_client_secret": "Leave empty to keep the stored secret."
+        }
+      },
+      "reauth_ms_confirm": {
+        "title": "Re-authorize Microsoft Account",
+        "description": "Your Microsoft authorization has expired or been revoked. If you replaced the client secret in your Entra App Registration, enter the new one below. Click Submit to sign in again with your Microsoft account and restore contact sync.",
+        "data": {
+          "ms_client_secret": "New Microsoft Client Secret (optional)"
+        },
+        "data_description": {
+          "ms_client_secret": "Leave empty to keep the stored secret."
+        }
+      },
+      "reconfigure": {
+        "title": "Change App Credentials",
+        "description": "Update the client IDs and secrets of your Entra App Registration and Google Cloud OAuth client. Leave a secret empty to keep the stored one. A new secret is checked against your existing sign-in before it is saved, so tokens and the contact mapping are kept. A changed client ID needs its new secret and a fresh sign-in with that provider.",
+        "data": {
+          "ms_client_id": "Microsoft Client ID",
+          "ms_client_secret": "New Microsoft Client Secret (optional)",
+          "google_client_id": "Google Client ID",
+          "google_client_secret": "New Google Client Secret (optional)"
+        },
+        "data_description": {
+          "ms_client_secret": "Leave empty to keep the stored secret.",
+          "google_client_secret": "Leave empty to keep the stored secret."
+        }
       }
     },
     "error": {
@@ -35,13 +65,18 @@
       "google_auth_failed": "Google authorization failed. Check your client credentials and the authorization code.",
       "cannot_connect": "Unable to connect. Check your credentials and network connection.",
       "unknown": "Unexpected error. Check the Home Assistant logs.",
-      "ms_url_failed": "Could not build the Microsoft sign-in URL. Check your credentials and the Home Assistant logs."
+      "ms_url_failed": "Could not build the Microsoft sign-in URL. Check your credentials and the Home Assistant logs.",
+      "ms_invalid_client": "Microsoft rejected the client credentials. Check the client secret (it may be wrong or expired) and try again. Nothing was saved.",
+      "google_invalid_client": "Google rejected the client credentials. Check the client secret and try again. Nothing was saved.",
+      "missing_client_id": "Client IDs must not be empty.",
+      "new_client_requires_secret": "A changed client ID needs the client secret that belongs to it."
     },
     "abort": {
       "already_configured": "This integration is already configured.",
       "ms_auth_timeout": "Microsoft authorization timed out. Please restart the setup.",
       "reauth_successful": "Re-authentication was successful.",
-      "missing_external_url": "Home Assistant external URL is not configured. Go to Settings → System → Network and set the Home Assistant URL, then try again."
+      "missing_external_url": "Home Assistant external URL is not configured. Go to Settings → System → Network and set the Home Assistant URL, then try again.",
+      "reconfigure_successful": "The app credentials were updated."
     }
   },
   "options": {

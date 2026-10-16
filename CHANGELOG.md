@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Reconfigure flow for app credentials** (#36). *Settings → Devices &
+  Services → Google Outlook Contacts Sync → Reconfigure* changes the Microsoft
+  and Google client IDs and secrets without removing the integration, so
+  tokens, the contact mapping and the sync token are kept. A secret left empty
+  stays unchanged. Before anything is saved, a new secret is validated by
+  redeeming the stored refresh token with it: a secret the provider rejects is
+  reported in the form and nothing is written; a refresh token that can no
+  longer be redeemed, or a changed client ID, leads into that provider's
+  sign-in.
+- README section *Rotating or changing client secrets*.
+
+### Fixed
+- **Re-authorization no longer loops on a revoked or expired client secret**
+  (#36). The re-authentication prompt now accepts a new secret for the affected
+  provider (empty keeps the stored one). Previously it always reused the stored
+  secret, so the code exchange failed again, and the only way out was deleting
+  the integration or editing `.storage/core.config_entries` by hand.
+- Re-authorization replaced the whole entry data and dropped keys it does not
+  manage, such as a legacy `delete_removed`; it now only updates the
+  credentials and tokens.
+
 ## [1.1.0] - 2026-07-27
 
 ### Upgrade notes

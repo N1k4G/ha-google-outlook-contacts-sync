@@ -164,14 +164,35 @@ service: google_outlook_contacts_sync.full_sync
 
 ## Re-authorization
 
-If either token expires or is revoked, the integration raises a **Repair** notification in HA. Go to **Settings → Devices & Services**, find the integration, and click **Re-configure** to re-authorize.
+If either token expires or is revoked, the integration raises a **Repair** notification in HA. Go to **Settings → Devices & Services**, find the integration, and click **Reconfigure** on the re-authentication prompt. The prompt names the affected provider and accepts a **new client secret**: if the stored secret expired or was revoked, enter the replacement there, otherwise leave it empty to keep the stored one. You then sign in with that provider again.
+
+---
+
+## Rotating or changing client secrets
+
+Client secrets and IDs can be changed at any time without removing the integration. Tokens, the contact mapping and the Google sync token are kept, so no full resync and no duplicates follow.
+
+1. Create the new secret **while the old one still works**:
+   - **Microsoft:** Entra ID → App registrations → your app → **Certificates & secrets → New client secret**. Copy the value.
+   - **Google:** APIs & Services → Credentials → your OAuth client → **Add secret**. Copy the value.
+2. In HA go to **Settings → Devices & Services → Google Outlook Contacts Sync → ⋮ → Reconfigure**.
+3. Enter the new secret(s). Leave a secret field empty to keep the stored one. Before saving, the integration redeems your existing refresh token with the new secret:
+   - **Accepted:** the secret is saved and the integration reloads. You do not need to sign in again.
+   - **Rejected by the provider** (wrong or expired secret): the form shows an error and nothing is saved.
+   - **Refresh token no longer usable:** you are taken to that provider's sign-in, as in a re-authorization.
+4. Press **Sync now** and check that **Sync problem** stays off.
+5. Delete the old secret in Entra or Google Cloud.
+
+Changing a **client ID** (moving to a different app registration or OAuth client) works the same way, but it always requires that client's secret and a fresh sign-in with the provider, because refresh tokens are bound to the client that issued them. Sign in with the same Microsoft and Google accounts as before; with a different account the stored mapping no longer matches.
+
+If you suspect a secret has leaked, for example through a backup, rotate it this way right away and then delete the old secret at the provider.
 
 ---
 
 ## Security
 
 - **No secrets are stored in this repository.** All credentials are entered via the HA config flow and stored in HA's `.storage/` directory on your device.
-- **`.storage/` is not encrypted.** Home Assistant writes config entries and this integration's mapping as plain JSON, protected only by file-system permissions. Your Microsoft and Google client secrets and OAuth refresh tokens are readable by anything that can read the config directory — **including any backup of it**. Treat backups of your HA configuration as secrets.
+- **`.storage/` is not encrypted.** Home Assistant writes config entries and this integration's mapping as plain JSON, protected only by file-system permissions. Your Microsoft and Google client secrets and OAuth refresh tokens are readable by anything that can read the config directory — **including any backup of it**. Treat backups of your HA configuration as secrets, and [rotate the client secrets](#rotating-or-changing-client-secrets) if one may have been exposed.
 - Token caches, `.env` files, and `credentials.json` are listed in `.gitignore`.
 - `detect-secrets` and Gitleaks run as pre-commit hooks.
 

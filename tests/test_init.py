@@ -17,6 +17,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from custom_components.google_outlook_contacts_sync import (
     _async_entry_updated,
     _async_persist_tokens,
+    _client_credentials,
     async_setup_entry,
     async_unload_entry,
 )
@@ -265,13 +266,17 @@ class TestTokenPersistence:
     @pytest.mark.asyncio
     async def test_no_change_writes_nothing(self):
         hass, entry, backend, client = self._parts()
-        await _async_persist_tokens(hass, entry, backend, client)
+        await _async_persist_tokens(
+            hass, entry, backend, client, _client_credentials(entry.data)
+        )
         hass.config_entries.async_update_entry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_microsoft_change_is_written(self):
         hass, entry, backend, client = self._parts(ms_token={"access_token": "new"})
-        await _async_persist_tokens(hass, entry, backend, client)
+        await _async_persist_tokens(
+            hass, entry, backend, client, _client_credentials(entry.data)
+        )
 
         hass.config_entries.async_update_entry.assert_called_once()
         data = hass.config_entries.async_update_entry.call_args.kwargs["data"]
@@ -282,7 +287,9 @@ class TestTokenPersistence:
     async def test_google_change_is_written(self):
         new_google = {**GOOGLE_TOKEN, "token": "refreshed"}
         hass, entry, backend, client = self._parts(google_token=new_google)
-        await _async_persist_tokens(hass, entry, backend, client)
+        await _async_persist_tokens(
+            hass, entry, backend, client, _client_credentials(entry.data)
+        )
 
         data = hass.config_entries.async_update_entry.call_args.kwargs["data"]
         assert data["google_token"]["token"] == "refreshed"
@@ -293,9 +300,27 @@ class TestTokenPersistence:
             ms_token={"access_token": "new"},
             google_token={**GOOGLE_TOKEN, "token": "refreshed"},
         )
-        await _async_persist_tokens(hass, entry, backend, client)
+        await _async_persist_tokens(
+            hass, entry, backend, client, _client_credentials(entry.data)
+        )
 
         assert hass.config_entries.async_update_entry.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_credentials_replaced_mid_run_are_not_paired_with_old_tokens(
+        self,
+    ):
+        """#36: a run that outlives a reconfigure must not save its tokens."""
+        hass, entry, backend, client = self._parts(
+            ms_token={"access_token": "old-client"},
+            google_token={**GOOGLE_TOKEN, "token": "old-secret-token"},
+        )
+        built_with = _client_credentials(entry.data)
+        entry.data = {**entry.data, "ms_client_secret": "rotated"}
+
+        await _async_persist_tokens(hass, entry, backend, client, built_with)
+
+        hass.config_entries.async_update_entry.assert_not_called()
 
 
 class TestEntryUpdateListener:

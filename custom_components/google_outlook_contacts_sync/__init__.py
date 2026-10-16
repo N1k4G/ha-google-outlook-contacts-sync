@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import homeassistant.helpers.config_validation as cv
@@ -16,6 +17,8 @@ from .auth.ms_auth import HAStoreTokenBackend, build_account
 from .const import (
     CONF_AUTO_REMOVE_DUPLICATES,
     CONF_DELETE_REMOVED,
+    CONF_GOOGLE_CLIENT_ID,
+    CONF_GOOGLE_CLIENT_SECRET,
     CONF_MS_CLIENT_ID,
     CONF_MS_CLIENT_SECRET,
     DATA_COORDINATOR,
@@ -106,8 +109,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_AUTO_REMOVE_DUPLICATES, DEFAULT_AUTO_REMOVE_DUPLICATES
     )
 
+    credentials = _client_credentials(data)
+
     async def _persist_tokens() -> None:
-        await _async_persist_tokens(hass, entry, ms_backend, google_client)
+        await _async_persist_tokens(hass, entry, ms_backend, google_client, credentials)
 
     engine = SyncEngine(
         hass,
@@ -195,6 +200,7 @@ async def _async_persist_tokens(
     entry: ConfigEntry,
     ms_backend: HAStoreTokenBackend,
     google_client: GoogleContactsClient,
+    credentials: tuple[str, ...],
 ) -> None:
     """Write back OAuth state that was refreshed at runtime.
 
@@ -204,7 +210,16 @@ async def _async_persist_tokens(
 
     Both providers are written in a single update so one run produces at most
     one entry write, and nothing is written when nothing changed.
+
+    *credentials* are the client credentials the clients were built with. If
+    the entry no longer holds them, a reconfigure or reauth replaced them
+    while this run was in flight and the reload is pending; writing back now
+    would pair the new credentials with the old client's tokens.
     """
+    if _client_credentials(entry.data) != credentials:
+        _LOGGER.debug("Client credentials changed during the run; tokens not saved")
+        return
+
     new_data = dict(entry.data)
     changed = False
 
@@ -221,6 +236,19 @@ async def _async_persist_tokens(
     if changed:
         _LOGGER.debug("Persisting refreshed OAuth token(s) to the config entry")
         hass.config_entries.async_update_entry(entry, data=new_data)
+
+
+def _client_credentials(data: Mapping[str, Any]) -> tuple[str, ...]:
+    """The client IDs and secrets an entry's clients are built from."""
+    return tuple(
+        str(data.get(key, ""))
+        for key in (
+            CONF_MS_CLIENT_ID,
+            CONF_MS_CLIENT_SECRET,
+            CONF_GOOGLE_CLIENT_ID,
+            CONF_GOOGLE_CLIENT_SECRET,
+        )
+    )
 
 
 def _store_reauth_provider(

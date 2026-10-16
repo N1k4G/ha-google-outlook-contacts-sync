@@ -27,7 +27,37 @@
       },
       "reauth_confirm": {
         "title": "Google-Konto erneut autorisieren",
-        "description": "Deine Google-Autorisierung ist abgelaufen oder wurde widerrufen. Klicke auf Absenden, um dich erneut mit deinem Google-Konto anzumelden und die Kontaktsynchronisierung wiederherzustellen."
+        "description": "Deine Google-Autorisierung ist abgelaufen oder wurde widerrufen. Falls du das Client-Secret deines Google Cloud OAuth-Clients ersetzt hast, gib das neue unten ein. Klicke auf Absenden, um dich erneut mit deinem Google-Konto anzumelden und die Kontaktsynchronisierung wiederherzustellen.",
+        "data": {
+          "google_client_secret": "Neues Google Client-Secret (optional)"
+        },
+        "data_description": {
+          "google_client_secret": "Leer lassen, um das gespeicherte Secret beizubehalten."
+        }
+      },
+      "reauth_ms_confirm": {
+        "title": "Microsoft-Konto erneut autorisieren",
+        "description": "Deine Microsoft-Autorisierung ist abgelaufen oder wurde widerrufen. Falls du das Client-Secret in deiner Entra-App-Registrierung ersetzt hast, gib das neue unten ein. Klicke auf Absenden, um dich erneut mit deinem Microsoft-Konto anzumelden und die Kontaktsynchronisierung wiederherzustellen.",
+        "data": {
+          "ms_client_secret": "Neues Microsoft Client-Secret (optional)"
+        },
+        "data_description": {
+          "ms_client_secret": "Leer lassen, um das gespeicherte Secret beizubehalten."
+        }
+      },
+      "reconfigure": {
+        "title": "App-Anmeldedaten ändern",
+        "description": "Aktualisiere Client-IDs und -Secrets deiner Entra-App-Registrierung und deines Google Cloud OAuth-Clients. Lass ein Secret leer, um das gespeicherte beizubehalten. Ein neues Secret wird vor dem Speichern gegen deine bestehende Anmeldung geprüft; Tokens und Kontakt-Zuordnung bleiben erhalten. Eine geänderte Client-ID braucht ihr neues Secret und eine erneute Anmeldung beim jeweiligen Anbieter.",
+        "data": {
+          "ms_client_id": "Microsoft Client-ID",
+          "ms_client_secret": "Neues Microsoft Client-Secret (optional)",
+          "google_client_id": "Google Client-ID",
+          "google_client_secret": "Neues Google Client-Secret (optional)"
+        },
+        "data_description": {
+          "ms_client_secret": "Leer lassen, um das gespeicherte Secret beizubehalten.",
+          "google_client_secret": "Leer lassen, um das gespeicherte Secret beizubehalten."
+        }
       }
     },
     "error": {
@@ -35,13 +65,18 @@
       "ms_url_failed": "Microsoft-Anmelde-URL konnte nicht erstellt werden. Überprüfe deine Anmeldedaten und die Home Assistant-Protokolle.",
       "google_auth_failed": "Google-Autorisierung fehlgeschlagen. Überprüfe deine Client-Anmeldedaten und den Autorisierungscode.",
       "cannot_connect": "Verbindung nicht möglich. Überprüfe deine Anmeldedaten und die Netzwerkverbindung.",
-      "unknown": "Unerwarteter Fehler. Prüfe die Home Assistant-Protokolle."
+      "unknown": "Unerwarteter Fehler. Prüfe die Home Assistant-Protokolle.",
+      "ms_invalid_client": "Microsoft hat die Client-Anmeldedaten abgelehnt. Prüfe das Client-Secret (es kann falsch oder abgelaufen sein) und versuche es erneut. Es wurde nichts gespeichert.",
+      "google_invalid_client": "Google hat die Client-Anmeldedaten abgelehnt. Prüfe das Client-Secret und versuche es erneut. Es wurde nichts gespeichert.",
+      "missing_client_id": "Die Client-IDs dürfen nicht leer sein.",
+      "new_client_requires_secret": "Eine geänderte Client-ID braucht das zugehörige Client-Secret."
     },
     "abort": {
       "already_configured": "Diese Integration ist bereits konfiguriert.",
       "missing_external_url": "Die externe URL von Home Assistant ist nicht konfiguriert. Gehe zu Einstellungen → System → Netzwerk und trage die Home Assistant-URL ein, dann versuche es erneut.",
       "ms_auth_timeout": "Microsoft-Autorisierung abgelaufen. Bitte starte die Einrichtung neu.",
-      "reauth_successful": "Erneute Authentifizierung erfolgreich."
+      "reauth_successful": "Erneute Authentifizierung erfolgreich.",
+      "reconfigure_successful": "Die App-Anmeldedaten wurden aktualisiert."
     }
   },
   "options": {
