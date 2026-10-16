@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+- **Minimum Home Assistant version is now 2025.8.0.** The options flow now
+  uses `OptionsFlowWithReload` instead of a config entry update listener. HA
+  2026.12 turns an update listener combined with the reauth/reconfigure reload
+  helper into an error. HACS will not offer this update to installations below
+  2025.8.0; if you installed manually, check your version before updating.
+
 ### Added
 - **Reconfigure flow for app credentials** (#36). *Settings → Devices &
   Services → Google Outlook Contacts Sync → Reconfigure* changes the Microsoft
@@ -26,8 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   secret, so the code exchange failed again, and the only way out was deleting
   the integration or editing `.storage/core.config_entries` by hand.
 - Re-authorization replaced the whole entry data and dropped keys it does not
-  manage, such as a legacy `delete_removed`; it now only updates the
-  credentials and tokens.
+  manage, such as a legacy `delete_removed`; it now only writes what it
+  changed.
+- A sync still running when a reauth or reconfigure finished could write its
+  old token back over the new one before the reload, undoing the new sign-in.
+  Tokens replaced from outside a run are now left alone.
+- After a failed sign-in during setup, reauth or reconfigure, the retry form
+  keeps the client ID, and client secrets are entered in masked fields.
 
 ## [1.1.0] - 2026-07-27
 

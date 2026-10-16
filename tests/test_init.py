@@ -15,15 +15,12 @@ import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.google_outlook_contacts_sync import (
-    _async_entry_updated,
     _async_persist_tokens,
-    _client_credentials,
     async_setup_entry,
     async_unload_entry,
 )
 from custom_components.google_outlook_contacts_sync.const import (
     DATA_COORDINATOR,
-    DATA_OPTIONS_SNAPSHOT,
     DATA_REAUTH_PROVIDER,
     DOMAIN,
     SERVICE_FULL_SYNC,
@@ -263,20 +260,20 @@ class TestTokenPersistence:
         )
         return hass, entry, backend, client
 
+    @staticmethod
+    def _known(entry):
+        return {key: entry.data.get(key) for key in ("ms_token", "google_token")}
+
     @pytest.mark.asyncio
     async def test_no_change_writes_nothing(self):
         hass, entry, backend, client = self._parts()
-        await _async_persist_tokens(
-            hass, entry, backend, client, _client_credentials(entry.data)
-        )
+        await _async_persist_tokens(hass, entry, backend, client, self._known(entry))
         hass.config_entries.async_update_entry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_microsoft_change_is_written(self):
         hass, entry, backend, client = self._parts(ms_token={"access_token": "new"})
-        await _async_persist_tokens(
-            hass, entry, backend, client, _client_credentials(entry.data)
-        )
+        await _async_persist_tokens(hass, entry, backend, client, self._known(entry))
 
         hass.config_entries.async_update_entry.assert_called_once()
         data = hass.config_entries.async_update_entry.call_args.kwargs["data"]
@@ -287,9 +284,7 @@ class TestTokenPersistence:
     async def test_google_change_is_written(self):
         new_google = {**GOOGLE_TOKEN, "token": "refreshed"}
         hass, entry, backend, client = self._parts(google_token=new_google)
-        await _async_persist_tokens(
-            hass, entry, backend, client, _client_credentials(entry.data)
-        )
+        await _async_persist_tokens(hass, entry, backend, client, self._known(entry))
 
         data = hass.config_entries.async_update_entry.call_args.kwargs["data"]
         assert data["google_token"]["token"] == "refreshed"
@@ -300,68 +295,69 @@ class TestTokenPersistence:
             ms_token={"access_token": "new"},
             google_token={**GOOGLE_TOKEN, "token": "refreshed"},
         )
-        await _async_persist_tokens(
-            hass, entry, backend, client, _client_credentials(entry.data)
-        )
+        await _async_persist_tokens(hass, entry, backend, client, self._known(entry))
 
         assert hass.config_entries.async_update_entry.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_credentials_replaced_mid_run_are_not_paired_with_old_tokens(
-        self,
-    ):
-        """#36: a run that outlives a reconfigure must not save its tokens."""
+    @pytest.mark.parametrize("replaced", ["ms_token", "google_token"])
+    async def test_token_replaced_mid_run_is_not_overwritten(self, replaced):
+        """#36: a run that outlives a reauth or reconfigure must not undo it."""
         hass, entry, backend, client = self._parts(
-            ms_token={"access_token": "old-client"},
-            google_token={**GOOGLE_TOKEN, "token": "old-secret-token"},
+            ms_token={"access_token": "old-run"},
+            google_token={**GOOGLE_TOKEN, "token": "old-run"},
         )
-        built_with = _client_credentials(entry.data)
-        entry.data = {**entry.data, "ms_client_secret": "rotated"}
+        known = self._known(entry)
+        entry.data = {**entry.data, replaced: {"new": "sign-in"}}
 
-        await _async_persist_tokens(hass, entry, backend, client, built_with)
+        await _async_persist_tokens(hass, entry, backend, client, known)
 
-        hass.config_entries.async_update_entry.assert_not_called()
-
-
-class TestEntryUpdateListener:
-    """#7: token writes must not reload; option changes must."""
-
-    @pytest.mark.asyncio
-    async def test_unchanged_options_do_not_reload(self):
-        hass, entry = _make_hass(), _make_entry(options={"sync_interval_hours": 12})
-        hass.data[DOMAIN] = {
-            "entry-1": {
-                DATA_COORDINATOR: MagicMock(),
-                DATA_OPTIONS_SNAPSHOT: {"sync_interval_hours": 12},
-            }
-        }
-
-        await _async_entry_updated(hass, entry)
-
-        hass.config_entries.async_reload.assert_not_called()
+        data = hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        assert data[replaced] == {"new": "sign-in"}
+        other = "google_token" if replaced == "ms_token" else "ms_token"
+        assert data[other] != entry.data[other]  # this runtime's own refresh
 
     @pytest.mark.asyncio
-    async def test_changed_options_reload_once(self):
-        hass, entry = _make_hass(), _make_entry(options={"sync_interval_hours": 6})
-        hass.data[DOMAIN] = {
-            "entry-1": {
-                DATA_COORDINATOR: MagicMock(),
-                DATA_OPTIONS_SNAPSHOT: {"sync_interval_hours": 12},
-            }
-        }
+    async def test_own_writes_do_not_block_the_next_one(self):
+        hass, entry, backend, client = self._parts(ms_token={"access_token": "r1"})
+        known = self._known(entry)
+        hass.config_entries.async_update_entry.side_effect = (
+            lambda _entry, data: setattr(entry, "data", data)
+        )
 
-        await _async_entry_updated(hass, entry)
+        await _async_persist_tokens(hass, entry, backend, client, known)
+        backend.get_token_dict.return_value = {"access_token": "r2"}
+        await _async_persist_tokens(hass, entry, backend, client, known)
 
-        hass.config_entries.async_reload.assert_awaited_once_with("entry-1")
+        assert entry.data["ms_token"] == {"access_token": "r2"}
+        assert hass.config_entries.async_update_entry.call_count == 2
+
+
+class TestReloadOnOptionsChange:
+    """#7 / #36: token writes must not reload; option changes must.
+
+    HA's OptionsFlowWithReload reloads only when the options changed. It must
+    not be combined with an update listener, and neither may the reauth and
+    reconfigure flows' reload helper from HA 2026.12 on.
+    """
 
     @pytest.mark.asyncio
-    async def test_unknown_entry_is_ignored(self):
+    async def test_setup_registers_no_update_listener(self):
         hass, entry = _make_hass(), _make_entry()
-        hass.data[DOMAIN] = {}
 
-        await _async_entry_updated(hass, entry)
+        await _setup(hass, entry)
 
-        hass.config_entries.async_reload.assert_not_called()
+        entry.add_update_listener.assert_not_called()
+
+    def test_options_flow_reloads_on_change(self):
+        from homeassistant.config_entries import OptionsFlowWithReload
+
+        from custom_components.google_outlook_contacts_sync.config_flow import (
+            ContactSyncOptionsFlow,
+        )
+
+        assert issubclass(ContactSyncOptionsFlow, OptionsFlowWithReload)
+        assert ContactSyncOptionsFlow.automatic_reload is True
 
 
 class TestCallbackViewRegistration:

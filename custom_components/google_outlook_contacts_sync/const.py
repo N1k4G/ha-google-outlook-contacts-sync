@@ -55,9 +55,6 @@ DATA_STORE = "store"
 DATA_MS_OAUTH_FLOWS = "ms_oauth_flows"
 DATA_GOOGLE_OAUTH_FLOWS = "google_oauth_flows"
 DATA_REAUTH_PROVIDER = "reauth_provider"
-# Effective options at setup time. The entry update listener compares against
-# this to tell an options change (reload) from a token write (do nothing).
-DATA_OPTIONS_SNAPSHOT = "options_snapshot"
 # Guards one-time registration of the OAuth callback views.
 DATA_VIEWS_REGISTERED = "views_registered"
 

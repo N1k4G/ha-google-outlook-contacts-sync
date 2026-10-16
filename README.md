@@ -52,10 +52,11 @@ You need two sets of OAuth credentials — one for Microsoft, one for Google. Bo
 
 ## Installation
 
-**Requires Home Assistant 2024.12.0 or newer.** The integration uses
-`ConfigFlowResult` (2024.4), the `config_entry` argument to
-`DataUpdateCoordinator` (2024.11/12) and the `single_config_entry` manifest flag
-(2024.11); on older versions setup fails at import.
+**Requires Home Assistant 2025.8.0 or newer.** The integration uses
+`OptionsFlowWithReload` (2025.8), `ConfigFlowResult` (2024.4), the
+`config_entry` argument to `DataUpdateCoordinator` (2024.11/12) and the
+`single_config_entry` manifest flag (2024.11); on older versions setup fails at
+import.
 
 ### HACS (custom repository)
 

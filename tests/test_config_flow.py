@@ -435,6 +435,31 @@ class TestReconfigure:
         assert data["ms_token"] == {"runtime": "refreshed"}
         assert data["google_token"] == {"fresh": "google-token"}
 
+    async def test_failed_sign_in_retry_keeps_the_client_id(
+        self, ms_check, ms_oauth
+    ) -> None:
+        flow = _make_flow(SOURCE_RECONFIGURE, _make_entry())
+        await flow.async_step_reconfigure(
+            _reconfigure_input(
+                **{CONF_MS_CLIENT_ID: "mid-2", CONF_MS_CLIENT_SECRET: "msecret-2"}
+            )
+        )
+
+        # The provider redirects back with an error (e.g. consent denied).
+        await flow.async_step_ms_auth_url({"error": "access_denied"})
+        result = await flow.async_step_ms_auth_callback()
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "ms_credentials"
+        assert result["errors"] == {"base": "ms_auth_failed"}
+        suggested = {
+            str(key): (key.description or {}).get("suggested_value")
+            for key in result["data_schema"].schema
+        }
+        assert suggested[CONF_MS_CLIENT_ID] == "mid-2"
+        assert suggested[CONF_MS_CLIENT_SECRET] is None
+        flow.hass.config_entries.async_update_entry.assert_not_called()
+
     async def test_keys_the_flow_does_not_own_survive(self, ms_check) -> None:
         ms_check.return_value = CredentialCheck(CredentialStatus.VALID, {"x": 1})
         flow = _make_flow(SOURCE_RECONFIGURE, _make_entry(delete_removed=True))

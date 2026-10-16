@@ -10,7 +10,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
@@ -54,23 +54,23 @@ from .http import async_register_callback_views
 
 _LOGGER = logging.getLogger(__name__)
 
+# Secrets are masked and never prefilled; in reauth and reconfigure an empty
+# secret field keeps the stored secret.
+_SECRET_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+
 _STEP_MS_CREDENTIALS = vol.Schema(
     {
         vol.Required(CONF_MS_CLIENT_ID): str,
-        vol.Required(CONF_MS_CLIENT_SECRET): str,
+        vol.Required(CONF_MS_CLIENT_SECRET): _SECRET_SELECTOR,
     }
 )
 
 _STEP_GOOGLE_CREDENTIALS = vol.Schema(
     {
         vol.Required(CONF_GOOGLE_CLIENT_ID): str,
-        vol.Required(CONF_GOOGLE_CLIENT_SECRET): str,
+        vol.Required(CONF_GOOGLE_CLIENT_SECRET): _SECRET_SELECTOR,
     }
 )
-
-# Secret fields left empty keep the stored secret, so it never has to be
-# shown back in the form.
-_SECRET_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
 _STEP_RECONFIGURE = vol.Schema(
     {
@@ -307,11 +307,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             self._ms_client_secret = user_input[CONF_MS_CLIENT_SECRET].strip()
             return await self.async_step_ms_auth_url()
 
-        return self.async_show_form(
-            step_id="ms_credentials",
-            data_schema=_STEP_MS_CREDENTIALS,
-            errors=errors,
-        )
+        return self._ms_credentials_form(errors)
 
     async def async_step_ms_auth_url(
         self, user_input: dict[str, Any] | None = None
@@ -350,11 +346,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         except Exception:
             _LOGGER.exception("Failed to build Microsoft OAuth URL")
-            return self.async_show_form(
-                step_id="ms_credentials",
-                data_schema=_STEP_MS_CREDENTIALS,
-                errors={"base": "ms_url_failed"},
-            )
+            return self._ms_credentials_form({"base": "ms_url_failed"})
 
         msal_state: str = (
             self._ms_auth_flow.get("state", "") if self._ms_auth_flow else ""
@@ -378,11 +370,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             or self._ms_backend is None
             or self._ms_auth_flow is None
         ):
-            return self.async_show_form(
-                step_id="ms_credentials",
-                data_schema=_STEP_MS_CREDENTIALS,
-                errors={"base": "ms_auth_failed"},
-            )
+            return self._ms_credentials_form({"base": "ms_auth_failed"})
 
         success = await self.hass.async_add_executor_job(
             request_token,
@@ -392,11 +380,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if not success:
-            return self.async_show_form(
-                step_id="ms_credentials",
-                data_schema=_STEP_MS_CREDENTIALS,
-                errors={"base": "ms_auth_failed"},
-            )
+            return self._ms_credentials_form({"base": "ms_auth_failed"})
 
         self._ms_token = self._ms_backend.get_token_dict()
         if self._existing_entry is not None:
@@ -418,11 +402,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             self._google_client_secret = user_input[CONF_GOOGLE_CLIENT_SECRET].strip()
             return await self.async_step_google_auth_url()
 
-        return self.async_show_form(
-            step_id="google_credentials",
-            data_schema=_STEP_GOOGLE_CREDENTIALS,
-            errors=errors,
-        )
+        return self._google_credentials_form(errors)
 
     async def async_step_google_auth_url(
         self, user_input: dict[str, Any] | None = None
@@ -461,11 +441,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         except Exception:
             _LOGGER.exception("Failed to build Google OAuth URL")
-            return self.async_show_form(
-                step_id="google_credentials",
-                data_schema=_STEP_GOOGLE_CREDENTIALS,
-                errors={"base": "google_auth_failed"},
-            )
+            return self._google_credentials_form({"base": "google_auth_failed"})
 
         self.hass.data.setdefault(DOMAIN, {}).setdefault(DATA_GOOGLE_OAUTH_FLOWS, {})[
             google_state
@@ -481,11 +457,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Step 4b: exchange the Google authorization code for tokens."""
         if not self._google_code or self._google_flow is None:
-            return self.async_show_form(
-                step_id="google_credentials",
-                data_schema=_STEP_GOOGLE_CREDENTIALS,
-                errors={"base": "google_auth_failed"},
-            )
+            return self._google_credentials_form({"base": "google_auth_failed"})
 
         try:
             self._google_token = await self.hass.async_add_executor_job(
@@ -493,11 +465,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         except Exception:
             _LOGGER.exception("Google OAuth code exchange failed")
-            return self.async_show_form(
-                step_id="google_credentials",
-                data_schema=_STEP_GOOGLE_CREDENTIALS,
-                errors={"base": "google_auth_failed"},
-            )
+            return self._google_credentials_form({"base": "google_auth_failed"})
 
         return self._create_entry()
 
@@ -529,6 +497,31 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             data=data,
         )
 
+    def _ms_credentials_form(self, errors: dict[str, str]) -> ConfigFlowResult:
+        """The Microsoft credentials form, also the retry form after a failure.
+
+        The client ID is kept from the attempt (or the entry being reauthorized
+        or reconfigured), so a retry only needs the secret again.
+        """
+        return self.async_show_form(
+            step_id="ms_credentials",
+            data_schema=self.add_suggested_values_to_schema(
+                _STEP_MS_CREDENTIALS, {CONF_MS_CLIENT_ID: self._ms_client_id}
+            ),
+            errors=errors,
+        )
+
+    def _google_credentials_form(self, errors: dict[str, str]) -> ConfigFlowResult:
+        """The Google credentials form, also the retry form after a failure."""
+        return self.async_show_form(
+            step_id="google_credentials",
+            data_schema=self.add_suggested_values_to_schema(
+                _STEP_GOOGLE_CREDENTIALS,
+                {CONF_GOOGLE_CLIENT_ID: self._google_client_id},
+            ),
+            errors=errors,
+        )
+
     def _build_redirect_uri(self) -> str:
         external_url: str = self.hass.config.external_url or ""
         return build_redirect_uri(external_url)
@@ -548,8 +541,12 @@ def _field(user_input: dict[str, Any], key: str) -> str:
     return str(user_input.get(key) or "").strip()
 
 
-class ContactSyncOptionsFlow(OptionsFlow):
-    """Allow the user to change sync interval and deletion behaviour."""
+class ContactSyncOptionsFlow(OptionsFlowWithReload):
+    """Allow the user to change sync interval and deletion behaviour.
+
+    OptionsFlowWithReload reloads the entry only when the options actually
+    changed, which replaces the update listener this integration used to have.
+    """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
