@@ -12,7 +12,7 @@
   "issue_tracker": "https://github.com/N1k4G/ha-google-outlook-contacts-sync/issues",
   "requirements": [
     "O365>=2.0.27",
-    "google-api-python-client>=2.100.0",
+    "google-api-python-client>=2.71.0",
     "google-auth>=2.30.0",
     "google-auth-oauthlib>=1.2.0"
   ],
