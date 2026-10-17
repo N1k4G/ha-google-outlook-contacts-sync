@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README section *Rotating or changing client secrets*.
 
 ### Fixed
+- **A revoked or expired Microsoft sign-in now starts re-authorization**
+  (#38). When O365's token refresh failed, it raised a bare `RuntimeError`, so
+  the run only counted failed contacts and never asked to re-authorize. Every
+  run (sync, full resync and dry run) now checks the Microsoft token first and
+  refreshes it itself when it is about to expire. A rejected client secret or
+  refresh token starts the Microsoft re-authorization, where a new secret can
+  be entered. An unreachable token endpoint stays an ordinary sync error.
+  A refresh that fails in the middle of a run is classified the same way, and a
+  stored token cache that can no longer be read also leads to
+  re-authorization instead of failing every run.
+- **The Microsoft sign-in no longer lapses when no contact changes** (#38). A
+  run without changes sent no Graph request, so the refresh token was never
+  redeemed and expired after Microsoft's inactivity window (90 days by
+  default). The token check at the start of every run now keeps it in use.
 - **Re-authorization no longer loops on a revoked or expired client secret**
   (#36). The re-authentication prompt now accepts a new secret for the affected
   provider (empty keeps the stored one). Previously it always reused the stored

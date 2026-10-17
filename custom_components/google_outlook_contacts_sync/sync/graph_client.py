@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Never
 
 from O365 import Account  # type: ignore[import-untyped]
 
+from ..auth import CredentialStatus
+from ..auth.ms_auth import refresh_access_token
+
 _LOGGER = logging.getLogger(__name__)
 
 _CONTACTS_URL = "https://graph.microsoft.com/v1.0/me/contacts"
+
+# Refresh ahead of expiry so the access token outlasts the run that starts now.
+_REFRESH_MARGIN_SECONDS = 300
 
 
 class GraphContactsClient:
@@ -37,6 +44,75 @@ class GraphContactsClient:
             raise MSAuthError(
                 "Microsoft token is invalid or expired; re-authentication required."
             )
+
+    def ensure_token(self) -> None:
+        """Refresh the access token now unless it outlasts the coming run.
+
+        O365 only refreshes after Graph answers 401, so a run that changes
+        nothing in Outlook never redeems the refresh token at all: a revoked
+        or expired client secret went unnoticed, and the refresh token itself
+        lapsed after Entra's inactivity window. Called at the start of every
+        run, this surfaces both as MSAuthError and keeps the refresh token in
+        use.
+        """
+        if not self._account.is_authenticated:
+            # Also loads the token cache, so the expiry below is the real one.
+            raise MSAuthError(
+                "Microsoft refresh token is missing; re-authentication required."
+            )
+        try:
+            token = self._account.con.token_backend.get_access_token()
+            expires_on = int((token or {}).get("expires_on") or 0)
+        except (KeyError, TypeError, ValueError) as exc:
+            # A corrupted cache: MSAL's own search trips over the entry, and a
+            # refresh may add a new one beside it rather than replace it. Only
+            # a fresh sign-in writes a clean cache; without this, every run
+            # would fail the same way and never ask for one.
+            raise MSAuthError(
+                "Microsoft token cache is unreadable; re-authentication required."
+            ) from exc
+        if expires_on - time.time() > _REFRESH_MARGIN_SECONDS:
+            return
+        self._refresh()
+
+    def _refresh(self) -> None:
+        """Redeem the refresh token; raise MSAuthError if Entra refuses."""
+        con = self._account.con
+        try:
+            status, access_token = refresh_access_token(
+                self._account, con.token_backend
+            )
+        except Exception as exc:
+            raise GraphRequestError(
+                f"Microsoft token refresh failed: {type(exc).__name__}"
+            ) from exc
+        if status is CredentialStatus.VALID:
+            if con.session is not None and access_token:
+                # The session caches the bearer header; point it at the new
+                # token. A session created later reads it from the backend.
+                con.update_session_auth_header(access_token=access_token)
+            return
+        if status is CredentialStatus.CANNOT_CONNECT:
+            raise GraphRequestError("Microsoft token endpoint is unavailable")
+        raise MSAuthError(
+            f"Microsoft token refresh rejected ({status}); re-authentication required."
+        )
+
+    def _request(self, method: str, url: str, **kwargs: Any) -> Any:
+        """Send a Graph request, classifying a failed token refresh.
+
+        When O365's own refresh fails it raises a bare RuntimeError that says
+        nothing usable about why. Refreshing again through MSAL tells a
+        revoked credential (MSAuthError, so reauth starts) from an outage
+        (GraphRequestError, so the run fails and is retried).
+        """
+        try:
+            return getattr(self._account.con, method)(url, **kwargs)
+        except RuntimeError as exc:
+            self._refresh()
+            raise GraphRequestError(
+                f"Microsoft Graph {method.upper()} failed during a token refresh"
+            ) from exc
 
     def _raise_request_failure(self, operation: str) -> Never:
         """Raise the right error for a failed Graph request.
@@ -87,7 +163,7 @@ class GraphContactsClient:
         contacts: list[dict[str, Any]] = []
         url: str | None = _CONTACTS_URL
         while url:
-            response = self._account.con.get(url, params=params)
+            response = self._request("get", url, params=params)
             if not response:
                 self._raise_request_failure("contact listing")
             body = self._response_body(response, "contact listing")
@@ -104,7 +180,7 @@ class GraphContactsClient:
 
     def create_contact(self, fields: dict[str, Any]) -> str:
         """Create a new contact and return its Graph contact id."""
-        response = self._account.con.post(_CONTACTS_URL, data=fields)
+        response = self._request("post", _CONTACTS_URL, data=fields)
         if not response:
             self._raise_request_failure("contact creation")
 
@@ -121,14 +197,14 @@ class GraphContactsClient:
 
     def update_contact(self, contact_id: str, fields: dict[str, Any]) -> None:
         """Update an existing contact in place."""
-        response = self._account.con.patch(f"{_CONTACTS_URL}/{contact_id}", data=fields)
+        response = self._request("patch", f"{_CONTACTS_URL}/{contact_id}", data=fields)
         if not response:
             self._raise_request_failure(f"contact update ({contact_id})")
         _LOGGER.debug("Updated Graph contact: %s", contact_id)
 
     def delete_contact(self, contact_id: str) -> None:
         """Delete a contact by its Graph id."""
-        response = self._account.con.delete(f"{_CONTACTS_URL}/{contact_id}")
+        response = self._request("delete", f"{_CONTACTS_URL}/{contact_id}")
         if not response:
             self._raise_request_failure(f"contact deletion ({contact_id})")
         _LOGGER.debug("Deleted Graph contact: %s", contact_id)

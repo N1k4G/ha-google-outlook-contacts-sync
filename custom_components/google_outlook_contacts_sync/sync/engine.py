@@ -234,6 +234,7 @@ class SyncEngine:
         """Delta sync pass: apply changed Google contacts to Outlook."""
         async with self._run_lock:
             try:
+                await self._ensure_ms_token()
                 return await self._async_sync_unlocked()
             finally:
                 await self._persist_tokens()
@@ -242,6 +243,7 @@ class SyncEngine:
         """Full reconciliation of every Google contact against Outlook."""
         async with self._run_lock:
             try:
+                await self._ensure_ms_token()
                 return await self._async_full_sync_unlocked()
             finally:
                 await self._persist_tokens()
@@ -254,11 +256,22 @@ class SyncEngine:
         """
         async with self._run_lock:
             try:
+                await self._ensure_ms_token()
                 return await self._async_plan_unlocked()
             finally:
                 # A dry run writes nothing to Outlook but still talks to Google,
                 # which can refresh the credentials.
                 await self._persist_tokens()
+
+    async def _ensure_ms_token(self) -> None:
+        """Check the Microsoft sign-in before every run, including dry runs.
+
+        A run that changes nothing in Outlook sends no Graph request, so a
+        revoked secret or a lapsed refresh token would otherwise surface only
+        once a contact changes. Raises MSAuthError so the coordinator starts
+        reauth; a refreshed token is saved by the finally block of the run.
+        """
+        await self._hass.async_add_executor_job(self._graph.ensure_token)
 
     async def _persist_tokens(self) -> None:
         """Save refreshed OAuth state, inside the lock, whatever else happened.
