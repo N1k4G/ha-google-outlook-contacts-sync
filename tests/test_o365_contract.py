@@ -64,14 +64,17 @@ _TOKEN_OK = {
 }
 
 
-def _cache(access_token_expires_on: int | str) -> dict[str, Any]:
-    """A serialized MSAL cache as the config entry stores it."""
+def _cache(access_token_expires_on: int | str | None) -> dict[str, Any]:
+    """A serialized MSAL cache as the config entry stores it.
+
+    ``None`` leaves the expiry fields out, as a damaged cache might.
+    """
     common = {
         "home_account_id": "uid.utid",
         "environment": "login.microsoftonline.com",
         "client_id": "mid",
     }
-    return {
+    cache = {
         "Account": {
             "a": {
                 "home_account_id": "uid.utid",
@@ -107,6 +110,10 @@ def _cache(access_token_expires_on: int | str) -> dict[str, Any]:
         "IdToken": {},
         "AppMetadata": {},
     }
+    if access_token_expires_on is None:
+        for field in ("expires_on", "extended_expires_on"):
+            del cache["AccessToken"]["t"][field]
+    return cache
 
 
 def _response(status: int, body: dict[str, Any], url: str) -> requests.Response:
@@ -155,7 +162,9 @@ def now() -> int:
     return int(time.time())
 
 
-def _client(access_token_expires_on: int | str) -> tuple[GraphContactsClient, Any]:
+def _client(
+    access_token_expires_on: int | str | None,
+) -> tuple[GraphContactsClient, Any]:
     account, backend = build_account("mid", "secret", _cache(access_token_expires_on))
     assert account.is_authenticated  # what setup does before building the client
     return GraphContactsClient(account), backend
@@ -197,9 +206,10 @@ class TestEnsureTokenAgainstO365:
         with pytest.raises(MSAuthError):
             client.ensure_token()
 
-    def test_unreadable_cache_requires_reauth(self, http) -> None:
-        """MSAL's own cache search raises on a corrupted expiry."""
-        client, _ = _client("not-a-number")
+    @pytest.mark.parametrize("expires_on", ["not-a-number", None])
+    def test_unreadable_cache_requires_reauth(self, http, expires_on) -> None:
+        """MSAL's own cache search raises on a corrupted or missing expiry."""
+        client, _ = _client(expires_on)
 
         with pytest.raises(MSAuthError):
             client.ensure_token()

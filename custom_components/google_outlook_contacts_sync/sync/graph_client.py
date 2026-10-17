@@ -63,7 +63,7 @@ class GraphContactsClient:
         try:
             token = self._account.con.token_backend.get_access_token()
             expires_on = int((token or {}).get("expires_on") or 0)
-        except (TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             # A corrupted cache: MSAL's own search trips over the entry, and a
             # refresh may add a new one beside it rather than replace it. Only
             # a fresh sign-in writes a clean cache; without this, every run
