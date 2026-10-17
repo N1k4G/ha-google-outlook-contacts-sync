@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refreshes it itself when it is about to expire. A rejected client secret or
   refresh token starts the Microsoft re-authorization, where a new secret can
   be entered. An unreachable token endpoint stays an ordinary sync error.
-  A refresh that fails in the middle of a run is classified the same way.
+  A refresh that fails in the middle of a run is classified the same way, and a
+  stored token cache that can no longer be read also leads to
+  re-authorization instead of failing every run.
 - **The Microsoft sign-in no longer lapses when no contact changes** (#38). A
   run without changes sent no Graph request, so the refresh token was never
   redeemed and expired after Microsoft's inactivity window (90 days by

@@ -60,12 +60,17 @@ class GraphContactsClient:
             raise MSAuthError(
                 "Microsoft refresh token is missing; re-authentication required."
             )
-        token = self._account.con.token_backend.get_access_token()
         try:
+            token = self._account.con.token_backend.get_access_token()
             expires_on = int((token or {}).get("expires_on") or 0)
-        except (TypeError, ValueError):
-            # Unreadable expiry: refresh rather than fail every run.
-            expires_on = 0
+        except (TypeError, ValueError) as exc:
+            # A corrupted cache: MSAL's own search trips over the entry, and a
+            # refresh may add a new one beside it rather than replace it. Only
+            # a fresh sign-in writes a clean cache; without this, every run
+            # would fail the same way and never ask for one.
+            raise MSAuthError(
+                "Microsoft token cache is unreadable; re-authentication required."
+            ) from exc
         if expires_on - time.time() > _REFRESH_MARGIN_SECONDS:
             return
         self._refresh()

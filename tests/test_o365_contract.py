@@ -21,6 +21,9 @@ import requests
 from custom_components.google_outlook_contacts_sync.auth.ms_auth import (
     build_account,
 )
+from custom_components.google_outlook_contacts_sync.sync import (
+    graph_client as graph_client_module,
+)
 from custom_components.google_outlook_contacts_sync.sync.graph_client import (
     GraphContactsClient,
     GraphRequestError,
@@ -61,7 +64,7 @@ _TOKEN_OK = {
 }
 
 
-def _cache(access_token_expires_on: int) -> dict[str, Any]:
+def _cache(access_token_expires_on: int | str) -> dict[str, Any]:
     """A serialized MSAL cache as the config entry stores it."""
     common = {
         "home_account_id": "uid.utid",
@@ -152,7 +155,7 @@ def now() -> int:
     return int(time.time())
 
 
-def _client(access_token_expires_on: int) -> tuple[GraphContactsClient, Any]:
+def _client(access_token_expires_on: int | str) -> tuple[GraphContactsClient, Any]:
     account, backend = build_account("mid", "secret", _cache(access_token_expires_on))
     assert account.is_authenticated  # what setup does before building the client
     return GraphContactsClient(account), backend
@@ -194,6 +197,15 @@ class TestEnsureTokenAgainstO365:
         with pytest.raises(MSAuthError):
             client.ensure_token()
 
+    def test_unreadable_cache_requires_reauth(self, http) -> None:
+        """MSAL's own cache search raises on a corrupted expiry."""
+        client, _ = _client("not-a-number")
+
+        with pytest.raises(MSAuthError):
+            client.ensure_token()
+
+        assert http.token_requests == 0
+
     def test_outage_is_not_an_auth_failure(self, http, now) -> None:
         http.token = (503, {"error": "temporarily_unavailable"})
         client, _ = _client(now - 60)
@@ -214,12 +226,12 @@ class TestGraphRequestsAgainstO365:
     def test_new_token_replaces_the_header_of_an_existing_session(
         self, http, now
     ) -> None:
-        client, backend = _client(now + 3600)
+        # Usable now; within the refresh margin by the time the next run starts.
+        client, _ = _client(now + 400)
         client.create_contact({"givenName": "A"})  # O365 builds its session
-        for token in backend._cache["AccessToken"].values():
-            token["expires_on"] = str(now - 60)  # expires before the next run
 
-        client.ensure_token()
+        with patch.object(graph_client_module.time, "time", return_value=now + 200):
+            client.ensure_token()
         client.create_contact({"givenName": "B"})
 
         assert http.graph_auth == ["Bearer old-at", "Bearer new-at"]
