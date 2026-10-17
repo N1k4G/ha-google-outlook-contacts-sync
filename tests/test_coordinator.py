@@ -48,6 +48,10 @@ def _coordinator(engine: MagicMock) -> ContactSyncCoordinator:
 
 def _dry_run(engine: MagicMock) -> DryRunCoordinator:
     coordinator = DryRunCoordinator.__new__(DryRunCoordinator)
+    coordinator.hass = MagicMock()
+    coordinator.hass.data = {}
+    coordinator._entry = MagicMock()
+    coordinator._entry.entry_id = "entry-1"
     coordinator._engine = engine
     return coordinator
 
@@ -147,3 +151,20 @@ class TestDryRunCoordinator:
 
         with pytest.raises(UpdateFailed):
             await _dry_run(engine)._async_update_data()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("exc", "provider"),
+        [(MSAuthError("invalid_client"), "ms"), (GoogleAuthError("gone"), "google")],
+    )
+    async def test_auth_errors_start_reauth(self, exc, provider):
+        """#38: a dry run checks the Microsoft sign-in too."""
+        engine = MagicMock()
+        engine.async_plan = AsyncMock(side_effect=exc)
+        coordinator = _dry_run(engine)
+
+        with pytest.raises(ConfigEntryAuthFailed):
+            await coordinator._async_update_data()
+
+        stored = coordinator.hass.data[DOMAIN][DATA_REAUTH_PROVIDER]["entry-1"]
+        assert stored == provider

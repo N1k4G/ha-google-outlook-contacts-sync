@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
+from custom_components.google_outlook_contacts_sync.auth import CredentialStatus
+from custom_components.google_outlook_contacts_sync.sync import (
+    graph_client as graph_client_module,
+)
 from custom_components.google_outlook_contacts_sync.sync.engine import (
     SyncEngine,
     SyncPlan,
@@ -15,6 +19,10 @@ from custom_components.google_outlook_contacts_sync.sync.engine import (
 )
 from custom_components.google_outlook_contacts_sync.sync.google_client import (
     SyncTokenExpiredError,
+)
+from custom_components.google_outlook_contacts_sync.sync.graph_client import (
+    GraphContactsClient,
+    MSAuthError,
 )
 
 
@@ -1367,3 +1375,64 @@ class TestCursorSemantics:
 
         await engine.async_sync()
         assert store.sync_token == "token_stored"
+
+
+class TestMicrosoftTokenCheck:
+    """#38: every run checks the Microsoft sign-in before doing anything."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run", ["async_sync", "async_full_sync", "async_plan"])
+    async def test_every_run_checks_first(self, hass: MagicMock, run: str) -> None:
+        engine, google, graph, _ = _make_engine(hass, [])
+        order: list[str] = []
+        graph.ensure_token.side_effect = lambda: order.append("ensure")
+        google.fetch_contacts.side_effect = lambda *_: (
+            order.append("fetch") or ([], "tok")
+        )
+
+        await getattr(engine, run)()
+
+        assert order[:2] == ["ensure", "fetch"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run", ["async_sync", "async_full_sync", "async_plan"])
+    async def test_rejected_sign_in_stops_the_run(
+        self, hass: MagicMock, run: str
+    ) -> None:
+        engine, google, graph, _ = _make_engine(hass, [])
+        graph.ensure_token.side_effect = MSAuthError("invalid_client")
+        persisted: list[bool] = []
+
+        async def _persist() -> None:
+            persisted.append(True)
+
+        engine._persist_tokens_cb = _persist
+
+        with pytest.raises(MSAuthError):
+            await getattr(engine, run)()
+
+        google.fetch_contacts.assert_not_called()
+        assert persisted == [True]
+
+    @pytest.mark.asyncio
+    async def test_expired_secret_surfaces_in_a_run_without_changes(
+        self, hass: MagicMock
+    ) -> None:
+        """The real client: no contact changed, so no Graph request is due."""
+        engine, google, _, _ = _make_engine(hass, [])
+        con = MagicMock()
+        con.token_backend.get_access_token.return_value = {"expires_on": "0"}
+        engine._graph = GraphContactsClient(MagicMock(con=con))
+
+        with (
+            patch.object(
+                graph_client_module,
+                "refresh_access_token",
+                return_value=(CredentialStatus.INVALID_CLIENT, None),
+            ),
+            pytest.raises(MSAuthError),
+        ):
+            await engine.async_sync()
+
+        con.get.assert_not_called()
+        con.post.assert_not_called()

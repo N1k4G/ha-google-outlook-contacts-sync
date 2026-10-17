@@ -8,8 +8,13 @@ module had (calling ``.get("id")`` on the response object).
 
 from __future__ import annotations
 
+import time
+from unittest.mock import MagicMock, patch
+
 import pytest
 
+from custom_components.google_outlook_contacts_sync.auth import CredentialStatus
+from custom_components.google_outlook_contacts_sync.sync import graph_client
 from custom_components.google_outlook_contacts_sync.sync.graph_client import (
     GraphContactsClient,
     GraphRequestError,
@@ -223,3 +228,113 @@ class TestListContactsRaw:
     def test_empty_result_is_a_valid_success(self):
         con = FakeConnection(get=[FakeResponse({"value": []})])
         assert _client(con).list_contacts_raw() == []
+
+
+class FakeTokenConnection(FakeConnection):
+    """A connection that also carries O365's token backend and session."""
+
+    def __init__(self, *, expires_in: float | None, session=True, **kwargs):
+        super().__init__(**kwargs)
+        self.token_backend = MagicMock()
+        self.token_backend.get_access_token.return_value = (
+            None
+            if expires_in is None
+            else {"secret": "at", "expires_on": str(int(time.time() + expires_in))}
+        )
+        self.session = MagicMock() if session else None
+        self.update_session_auth_header = MagicMock()
+
+
+@pytest.fixture
+def refresh():
+    with patch.object(graph_client, "refresh_access_token") as mock:
+        yield mock
+
+
+class TestEnsureToken:
+    """#38: every run checks the Microsoft sign-in, not only runs with changes."""
+
+    def test_token_valid_for_the_run_is_left_alone(self, refresh):
+        con = FakeTokenConnection(expires_in=3600)
+
+        _client(con).ensure_token()
+
+        refresh.assert_not_called()
+
+    @pytest.mark.parametrize("expires_in", [-60, 120, None])
+    def test_expired_or_expiring_token_is_refreshed(self, refresh, expires_in):
+        refresh.return_value = (CredentialStatus.VALID, "new-at")
+        con = FakeTokenConnection(expires_in=expires_in)
+
+        _client(con).ensure_token()
+
+        refresh.assert_called_once()
+        assert refresh.call_args.args[1] is con.token_backend
+        con.update_session_auth_header.assert_called_once_with(access_token="new-at")
+
+    def test_refresh_without_a_session_leaves_the_header_to_o365(self, refresh):
+        refresh.return_value = (CredentialStatus.VALID, "new-at")
+        con = FakeTokenConnection(expires_in=-60, session=False)
+
+        _client(con).ensure_token()
+
+        con.update_session_auth_header.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "status", [CredentialStatus.INVALID_CLIENT, CredentialStatus.REAUTHORIZE]
+    )
+    def test_rejected_refresh_requires_reauth(self, refresh, status):
+        refresh.return_value = (status, None)
+
+        with pytest.raises(MSAuthError):
+            _client(FakeTokenConnection(expires_in=-60)).ensure_token()
+
+    def test_missing_refresh_token_requires_reauth(self, refresh):
+        con = FakeTokenConnection(expires_in=-60)
+
+        with pytest.raises(MSAuthError):
+            _client(con, authenticated=False).ensure_token()
+
+        refresh.assert_not_called()
+
+    def test_unreachable_token_endpoint_is_not_an_auth_failure(self, refresh):
+        refresh.return_value = (CredentialStatus.CANNOT_CONNECT, None)
+
+        with pytest.raises(GraphRequestError):
+            _client(FakeTokenConnection(expires_in=-60)).ensure_token()
+
+    def test_network_error_is_not_an_auth_failure(self, refresh):
+        refresh.side_effect = ConnectionError("dns")
+
+        with pytest.raises(GraphRequestError):
+            _client(FakeTokenConnection(expires_in=-60)).ensure_token()
+
+
+class FailingRefreshConnection(FakeTokenConnection):
+    """O365 reports a failed refresh of its own as a bare RuntimeError."""
+
+    def post(self, url, data=None):
+        raise RuntimeError("Refresh token operation failed: invalid_client")
+
+
+class TestRefreshFailureDuringARun:
+    """#38: O365's RuntimeError must not pass as a per-contact failure."""
+
+    @pytest.mark.parametrize(
+        "status", [CredentialStatus.INVALID_CLIENT, CredentialStatus.REAUTHORIZE]
+    )
+    def test_revoked_credential_becomes_ms_auth_error(self, refresh, status):
+        refresh.return_value = (status, None)
+        client = _client(FailingRefreshConnection(expires_in=-60))
+
+        with pytest.raises(MSAuthError):
+            client.create_contact({"givenName": "A"})
+
+    def test_transient_failure_stays_a_request_error(self, refresh):
+        refresh.return_value = (CredentialStatus.VALID, "new-at")
+        client = _client(FailingRefreshConnection(expires_in=-60))
+
+        with pytest.raises(GraphRequestError) as excinfo:
+            client.create_contact({"givenName": "A"})
+
+        assert not isinstance(excinfo.value, MSAuthError)

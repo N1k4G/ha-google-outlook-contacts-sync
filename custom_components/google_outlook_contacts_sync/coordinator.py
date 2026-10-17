@@ -23,6 +23,16 @@ from .sync.graph_client import MSAuthError
 _LOGGER = logging.getLogger(__name__)
 
 
+def _store_reauth_provider(
+    hass: HomeAssistant, entry: ConfigEntry, exc: Exception
+) -> None:
+    """Tell the reauth flow which provider failed."""
+    provider = "google" if isinstance(exc, GoogleAuthError) else "ms"
+    hass.data.setdefault(DOMAIN, {}).setdefault(DATA_REAUTH_PROVIDER, {})[
+        entry.entry_id
+    ] = provider
+
+
 class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
     """Drives periodic sync via :class:`~.sync.engine.SyncEngine`."""
 
@@ -46,18 +56,12 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
         self._entry = entry
         self._engine = engine
 
-    def _store_reauth_provider(self, exc: Exception) -> None:
-        provider = "google" if isinstance(exc, GoogleAuthError) else "ms"
-        self.hass.data.setdefault(DOMAIN, {}).setdefault(DATA_REAUTH_PROVIDER, {})[
-            self._entry.entry_id
-        ] = provider
-
     async def _async_update_data(self) -> SyncResult:
         """Fetch the latest data — called by the coordinator on schedule."""
         try:
             return await self._engine.async_sync()
         except (GoogleAuthError, MSAuthError) as exc:
-            self._store_reauth_provider(exc)
+            _store_reauth_provider(self.hass, self._entry, exc)
             raise ConfigEntryAuthFailed(str(exc)) from exc
         except Exception as exc:
             raise UpdateFailed(f"Sync failed: {exc}") from exc
@@ -67,7 +71,7 @@ class ContactSyncCoordinator(DataUpdateCoordinator[SyncResult]):
         try:
             result = await self._engine.async_full_sync()
         except (GoogleAuthError, MSAuthError) as exc:
-            self._store_reauth_provider(exc)
+            _store_reauth_provider(self.hass, self._entry, exc)
             self.async_set_update_error(UpdateFailed(str(exc)))
             if hasattr(self._entry, "async_start_reauth"):
                 self._entry.async_start_reauth(self.hass)
@@ -96,11 +100,19 @@ class DryRunCoordinator(DataUpdateCoordinator[SyncPlan]):
             _LOGGER,
             name=f"google_outlook_contacts_sync dry-run ({entry.entry_id})",
             update_interval=None,
+            # Lets HA start the reauth flow on ConfigEntryAuthFailed.
+            config_entry=entry,
         )
+        self._entry = entry
         self._engine = engine
 
     async def _async_update_data(self) -> SyncPlan:
         try:
             return await self._engine.async_plan()
+        except (GoogleAuthError, MSAuthError) as exc:
+            # A dry run checks the Microsoft sign-in too; a failure it finds
+            # needs the same reauth as one found by a real run.
+            _store_reauth_provider(self.hass, self._entry, exc)
+            raise ConfigEntryAuthFailed(str(exc)) from exc
         except Exception as exc:
             raise UpdateFailed(f"Dry run failed: {exc}") from exc
