@@ -61,7 +61,11 @@ class GraphContactsClient:
                 "Microsoft refresh token is missing; re-authentication required."
             )
         token = self._account.con.token_backend.get_access_token()
-        expires_on = int((token or {}).get("expires_on") or 0)
+        try:
+            expires_on = int((token or {}).get("expires_on") or 0)
+        except (TypeError, ValueError):
+            # Unreadable expiry: refresh rather than fail every run.
+            expires_on = 0
         if expires_on - time.time() > _REFRESH_MARGIN_SECONDS:
             return
         self._refresh()

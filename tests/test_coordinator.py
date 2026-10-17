@@ -7,11 +7,14 @@ exception type maps to which HA outcome.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.update_coordinator import (
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from custom_components.google_outlook_contacts_sync.const import (
     DATA_REAUTH_PROVIDER,
@@ -168,3 +171,12 @@ class TestDryRunCoordinator:
 
         stored = coordinator.hass.data[DOMAIN][DATA_REAUTH_PROVIDER]["entry-1"]
         assert stored == provider
+
+    def test_reauth_wiring_reaches_home_assistant(self):
+        """HA starts reauth from ConfigEntryAuthFailed only with config_entry."""
+        entry = MagicMock()
+        entry.entry_id = "entry-1"
+        with patch.object(DataUpdateCoordinator, "__init__", return_value=None) as init:
+            DryRunCoordinator(MagicMock(), entry, MagicMock())
+
+        assert init.call_args.kwargs["config_entry"] is entry

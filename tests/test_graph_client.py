@@ -261,6 +261,16 @@ class TestEnsureToken:
 
         refresh.assert_not_called()
 
+    @pytest.mark.parametrize("expires_on", ["not-a-number", {"bad": 1}])
+    def test_unreadable_expiry_is_refreshed_not_fatal(self, refresh, expires_on):
+        refresh.return_value = (CredentialStatus.VALID, "new-at")
+        con = FakeTokenConnection(expires_in=3600)
+        con.token_backend.get_access_token.return_value = {"expires_on": expires_on}
+
+        _client(con).ensure_token()
+
+        refresh.assert_called_once()
+
     @pytest.mark.parametrize("expires_in", [-60, 120, None])
     def test_expired_or_expiring_token_is_refreshed(self, refresh, expires_in):
         refresh.return_value = (CredentialStatus.VALID, "new-at")
