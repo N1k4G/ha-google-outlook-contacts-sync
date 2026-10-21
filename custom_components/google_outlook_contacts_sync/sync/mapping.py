@@ -41,6 +41,17 @@ MANAGED_GRAPH_FIELDS = (
     MANAGED_COLLECTION_FIELDS + MANAGED_SCALAR_FIELDS + MANAGED_ADDRESS_FIELDS
 )
 
+# Every property of Graph's physicalAddress. Graph requires the full set when
+# updating an address, and an address cannot be cleared with null: PATCHing
+# "homeAddress": null fails with a bare 500 instead of a 400.
+ADDRESS_SUBFIELDS = (
+    "street",
+    "city",
+    "state",
+    "postalCode",
+    "countryOrRegion",
+)
+
 # Graph phone type buckets
 _PHONE_HOME = {"home"}
 _PHONE_MOBILE = {"mobile"}
@@ -79,16 +90,23 @@ def to_graph_contact_update(person: dict[str, Any]) -> dict[str, Any]:
     """Convert a Google Person to an *authoritative* Graph Contact body.
 
     Every managed property is present, with an explicit empty value where Google
-    has no data. Graph treats properties omitted from a PATCH as unchanged, so a
-    sparse body can never clear a field the user deleted in Google — the value
-    would survive in Outlook forever while the stored hash claimed it was synced.
+    has no data: ``[]`` for lists, ``None`` for scalars and an address with every
+    subfield ``""`` for addresses. Graph treats properties omitted from a PATCH
+    as unchanged, so a sparse body can never clear a field the user deleted in
+    Google — the value would survive in Outlook forever while the stored hash
+    claimed it was synced.
     """
     contact = to_graph_contact(person)
 
     for graph_field in MANAGED_COLLECTION_FIELDS:
         contact.setdefault(graph_field, [])
-    for graph_field in MANAGED_SCALAR_FIELDS + MANAGED_ADDRESS_FIELDS:
+    for graph_field in MANAGED_SCALAR_FIELDS:
         contact.setdefault(graph_field, None)
+    for graph_field in MANAGED_ADDRESS_FIELDS:
+        # An empty address is every subfield set to "", never null; a populated
+        # one carries all subfields too, so a removed street does not survive.
+        address = contact.get(graph_field, {})
+        contact[graph_field] = {sub: address.get(sub, "") for sub in ADDRESS_SUBFIELDS}
 
     return contact
 

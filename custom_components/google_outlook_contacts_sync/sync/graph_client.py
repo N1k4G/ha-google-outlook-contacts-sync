@@ -7,6 +7,7 @@ import time
 from typing import Any, Never
 
 from O365 import Account  # type: ignore[import-untyped]
+from requests import HTTPError  # type: ignore[import-untyped]
 
 from ..auth import CredentialStatus
 from ..auth.ms_auth import refresh_access_token
@@ -113,6 +114,14 @@ class GraphContactsClient:
             raise GraphRequestError(
                 f"Microsoft Graph {method.upper()} failed during a token refresh"
             ) from exc
+        except HTTPError as exc:
+            # O365 raises on every 4xx/5xx. Its message is the URL plus Graph's
+            # human text; the status and Graph's error code are what tell a
+            # rejected payload from an outage, so they lead the message.
+            self._require_auth()
+            raise GraphRequestError(
+                f"Microsoft Graph {method.upper()} failed: {_describe_http_error(exc)}"
+            ) from exc
 
     def _raise_request_failure(self, operation: str) -> Never:
         """Raise the right error for a failed Graph request.
@@ -208,6 +217,27 @@ class GraphContactsClient:
         if not response:
             self._raise_request_failure(f"contact deletion ({contact_id})")
         _LOGGER.debug("Deleted Graph contact: %s", contact_id)
+
+
+def _describe_http_error(exc: HTTPError) -> str:
+    """Summarise a Graph error response as "HTTP <status> <code>: <message>"."""
+    response = exc.response
+    if response is None:
+        return str(exc)
+    try:
+        error = response.json().get("error") or {}
+    except Exception:
+        # An unparsable body still has a status worth reporting.
+        error = {}
+    if not isinstance(error, dict):
+        error = {}
+    code = str(error.get("code") or "")
+    message = str(error.get("message") or "")
+    parts = [f"HTTP {response.status_code}"]
+    if code:
+        parts.append(code)
+    summary = " ".join(parts)
+    return f"{summary}: {message}" if message else summary
 
 
 class MSAuthError(Exception):

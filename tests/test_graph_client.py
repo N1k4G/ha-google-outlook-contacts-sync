@@ -8,10 +8,12 @@ module had (calling ``.get("id")`` on the response object).
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from custom_components.google_outlook_contacts_sync.auth import CredentialStatus
 from custom_components.google_outlook_contacts_sync.sync import graph_client
@@ -74,6 +76,28 @@ class FakeConnection:
     def delete(self, url):
         self.delete_calls.append(url)
         return self._delete
+
+
+def _http_error(status: int, body: object) -> requests.HTTPError:
+    """The HTTPError O365 raises for a 4xx/5xx, carrying a real Response."""
+    response = requests.Response()
+    response.status_code = status
+    response._content = body if isinstance(body, bytes) else json.dumps(body).encode()
+    return requests.HTTPError(
+        f"{status} Server Error | Error Message: x", response=response
+    )
+
+
+class RaisingConnection(FakeConnection):
+    """A connection whose PATCH raises, as O365 does for an error status."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    def patch(self, url, data=None):
+        self.patch_calls.append((url, data))
+        raise self._error
 
 
 class FakeAccount:
@@ -142,6 +166,36 @@ class TestUpdateContact:
         con = FakeConnection(patch=FakeResponse(ok=False))
         with pytest.raises(MSAuthError):
             _client(con, authenticated=False).update_contact("graph-1", {})
+
+    def test_http_error_reports_status_and_graph_error_code(self):
+        error = _http_error(
+            500,
+            {
+                "error": {
+                    "code": "ErrorInternalServerError",
+                    "message": "An internal server error occurred.",
+                }
+            },
+        )
+        with pytest.raises(GraphRequestError) as excinfo:
+            _client(RaisingConnection(error)).update_contact("graph-1", {})
+        assert str(excinfo.value) == (
+            "Microsoft Graph PATCH failed: HTTP 500 ErrorInternalServerError: "
+            "An internal server error occurred."
+        )
+        assert excinfo.value.__cause__ is error
+
+    def test_http_error_with_unparsable_body_still_reports_status(self):
+        error = _http_error(502, b"<html>Bad Gateway</html>")
+        with pytest.raises(GraphRequestError, match=r"PATCH failed: HTTP 502$"):
+            _client(RaisingConnection(error)).update_contact("graph-1", {})
+
+    def test_http_error_while_unauthenticated_raises_auth_error(self):
+        error = _http_error(401, {"error": {"code": "InvalidAuthenticationToken"}})
+        with pytest.raises(MSAuthError):
+            _client(RaisingConnection(error), authenticated=False).update_contact(
+                "graph-1", {}
+            )
 
 
 class TestDeleteContact:

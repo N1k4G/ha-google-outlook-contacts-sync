@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README section *Rotating or changing client secrets*.
 
 ### Fixed
+- **Contact updates no longer fail with HTTP 500 for every contact.** The
+  update body cleared empty addresses with `null`, which Microsoft Graph answers
+  with a bare `500 Internal Server Error` instead of a 400. Since almost every
+  contact has at least one empty address slot, every update failed and every
+  run fell back to a full resync. Addresses are now always sent with all
+  subfields, empty ones as `""`, as Graph requires for structured properties.
+  The first run after updating pushes every mapped contact once.
+- **Graph errors name their status and error code** (e.g.
+  `HTTP 500 ErrorInternalServerError: …`) instead of O365's URL-prefixed text.
+- **The error list in the result sensor is capped at 20 entries.** 180 full
+  messages exceeded the recorder's 16 KB attribute limit. `failed` still
+  counts every failure.
+- **A run stops after 10 failed contact writes without a single success.** A
+  systematic failure no longer sends a request for every contact on every
+  run. An aborted full resync still discards the sync token, so the next run
+  reconciles in full again. The result sensor shows `aborted`.
 - **A revoked or expired Microsoft sign-in now starts re-authorization**
   (#38). When O365's token refresh failed, it raised a bare `RuntimeError`, so
   the run only counted failed contacts and never asked to re-authorize. Every

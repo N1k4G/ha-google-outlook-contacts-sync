@@ -8,6 +8,7 @@ from custom_components.google_outlook_contacts_sync.const import (
     BIRTHDAY_PLACEHOLDER_YEAR,
 )
 from custom_components.google_outlook_contacts_sync.sync.mapping import (
+    ADDRESS_SUBFIELDS,
     MANAGED_GRAPH_FIELDS,
     contact_hash,
     is_deleted,
@@ -282,11 +283,50 @@ class TestAuthoritativeUpdatePayload:
     def test_missing_birthday_cleared(self) -> None:
         assert to_graph_contact_update({})["birthday"] is None
 
-    def test_missing_addresses_cleared(self) -> None:
+    def test_missing_addresses_cleared_with_empty_subfields_not_null(self) -> None:
+        # Graph answers "homeAddress": null with a bare 500 on PATCH.
         result = to_graph_contact_update({})
-        assert result["homeAddress"] is None
-        assert result["businessAddress"] is None
-        assert result["otherAddress"] is None
+        for slot in ("homeAddress", "businessAddress", "otherAddress"):
+            assert result[slot] == dict.fromkeys(ADDRESS_SUBFIELDS, "")
+
+    def test_populated_address_carries_every_subfield(self) -> None:
+        # Graph requires the full property set when updating an address, and a
+        # subfield removed in Google must be cleared rather than left behind.
+        result = to_graph_contact_update(
+            {"addresses": [{"type": "home", "city": "Berlin"}]}
+        )
+        assert result["homeAddress"] == {
+            "street": "",
+            "city": "Berlin",
+            "state": "",
+            "postalCode": "",
+            "countryOrRegion": "",
+        }
+
+    def test_contact_without_addresses_or_birthday(self) -> None:
+        """The PATCH body that failed for every contact in production."""
+        result = to_graph_contact_update(
+            {
+                "names": [{"displayName": "Jane Doe", "givenName": "Jane"}],
+                "emailAddresses": [{"value": "jane@example.com"}],
+            }
+        )
+        assert result["givenName"] == "Jane"
+        assert result["emailAddresses"] == [
+            {"address": "jane@example.com", "name": "Jane Doe"}
+        ]
+        assert result["birthday"] is None
+        for slot in ("homeAddress", "businessAddress", "otherAddress"):
+            assert result[slot] == dict.fromkeys(ADDRESS_SUBFIELDS, "")
+
+    def test_address_change_changes_the_hash(self) -> None:
+        before = to_graph_contact_update(
+            {"addresses": [{"type": "home", "city": "Berlin", "streetAddress": "A 1"}]}
+        )
+        after = to_graph_contact_update(
+            {"addresses": [{"type": "home", "city": "Berlin"}]}
+        )
+        assert contact_hash(before) != contact_hash(after)
 
     def test_missing_organization_cleared(self) -> None:
         result = to_graph_contact_update({})
@@ -303,7 +343,7 @@ class TestAuthoritativeUpdatePayload:
         assert result["givenName"] == "Jane"
         assert result["mobilePhone"] == "+49 170 1234567"
         assert result["homeAddress"]["city"] == "Berlin"
-        assert result["businessAddress"] is None
+        assert result["businessAddress"] == dict.fromkeys(ADDRESS_SUBFIELDS, "")
 
     def test_create_payload_stays_sparse(self, person_full: dict[str, Any]) -> None:
         result = to_graph_contact(person_full)
@@ -315,7 +355,8 @@ class TestAuthoritativeUpdatePayload:
         assert to_graph_contact({}) == {}
         update = to_graph_contact_update({})
         assert len(update) == len(MANAGED_GRAPH_FIELDS)
-        assert all(v in ([], None) for v in update.values())
+        empty_address = dict.fromkeys(ADDRESS_SUBFIELDS, "")
+        assert all(v in ([], None, empty_address) for v in update.values())
 
 
 class TestIsDeleted:

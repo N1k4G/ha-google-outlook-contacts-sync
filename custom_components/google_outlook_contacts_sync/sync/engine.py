@@ -32,6 +32,16 @@ from .mapping import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Error messages kept per run. The list ends up in entity state attributes, and
+# the recorder drops attributes above 16 KB — 180 full Graph errors exceeded it.
+MAX_REPORTED_ERRORS = 20
+
+# A run stops once this many contact writes have failed without a single one
+# succeeding. When every write fails the cause is systematic (a payload Graph
+# rejects, an outage), and pushing on just repeats the same failure for every
+# contact on every run.
+ABORT_AFTER_FAILURES = 10
+
 
 class SyncAction(StrEnum):
     """The action the engine would take for a single Google person."""
@@ -143,6 +153,7 @@ class SyncResult:
     skipped: int = 0
     failed: int = 0
     duplicates_removed: int = 0
+    aborted: bool = False
     errors: list[str] = field(default_factory=list)
     duplicates: list[str] = field(default_factory=list)
     finished_at: datetime | None = None
@@ -152,6 +163,20 @@ class SyncResult:
     def changed(self) -> int:
         """Number of contacts actually mutated in Outlook."""
         return self.created + self.updated + self.deleted
+
+    @property
+    def nothing_succeeded(self) -> bool:
+        """True once enough writes failed with none succeeding to stop the run."""
+        return self.changed == 0 and self.failed >= ABORT_AFTER_FAILURES
+
+    def record_failure(self, message: str) -> None:
+        """Count a failed operation, keeping its message up to the report limit.
+
+        ``failed`` always holds the true total; only the messages are capped.
+        """
+        self.failed += 1
+        if len(self.errors) < MAX_REPORTED_ERRORS:
+            self.errors.append(message)
 
     def summary(self) -> str:
         """Short human-readable status line."""
@@ -164,6 +189,8 @@ class SyncResult:
             parts.append(f"{self.duplicates_removed} dupes removed")
         if self.failed:
             parts.append(f"{self.failed} failed")
+        if self.aborted:
+            parts.append("aborted")
         return ", ".join(parts)
 
     def as_dict(self) -> dict[str, Any]:
@@ -174,6 +201,7 @@ class SyncResult:
             "skipped": self.skipped,
             "failed": self.failed,
             "duplicates_removed": self.duplicates_removed,
+            "aborted": self.aborted,
             "errors": self.errors,
             "duplicates": self.duplicates,
             "finished_at": (self.finished_at.isoformat() if self.finished_at else None),
@@ -318,8 +346,10 @@ class SyncEngine:
 
         for person in people:
             await self._process(self._decide(person), person, result)
+            if self._abort_if_nothing_succeeds(result):
+                break
 
-        if self._auto_remove_duplicates:
+        if self._auto_remove_duplicates and not result.aborted:
             await self._dedupe(result)
 
         await self._finalize_delta(result, started, new_sync_token)
@@ -350,6 +380,17 @@ class SyncEngine:
             await self._process(
                 self._decide(person, snapshot, force=True), person, result
             )
+            if self._abort_if_nothing_succeeds(result):
+                break
+
+        if result.aborted:
+            # Orphan deletes or dedup on top of a systematic failure would only
+            # fail as well. The cursor is still discarded below: the contacts
+            # this run never reached may have last changed before it, so only
+            # another full resync delivers them again.
+            await self._finalize_full(result, started, new_sync_token)
+            _LOGGER.error("Full resync aborted: %s", result.summary())
+            return result
 
         await self._reconcile_orphans(active_resource_names, result)
 
@@ -438,6 +479,22 @@ class SyncEngine:
             self._store.sync_token = new_sync_token
         await self._persist(result, started)
 
+    def _abort_if_nothing_succeeds(self, result: SyncResult) -> bool:
+        """Mark the run aborted once writes keep failing and none succeeded."""
+        if result.aborted or not result.nothing_succeeded:
+            return result.aborted
+        result.aborted = True
+        _LOGGER.error(
+            "Stopping this run: the first %d contact writes all failed, so the "
+            "cause is not specific to one contact; see the errors above",
+            result.failed,
+        )
+        result.errors.append(
+            f"Run aborted after {result.failed} failures without a single "
+            "successful write"
+        )
+        return True
+
     async def _persist(self, result: SyncResult, started: datetime) -> None:
         await self._store.async_save()
         result.finished_at = dt_util.utcnow()
@@ -475,8 +532,7 @@ class SyncEngine:
                 _LOGGER.error(
                     "Failed to delete orphaned Outlook contact %s: %s", contact_id, exc
                 )
-                result.failed += 1
-                result.errors.append(f"{resource_name}: orphan delete failed: {exc}")
+                result.record_failure(f"{resource_name}: orphan delete failed: {exc}")
                 continue
 
             self._store.delete_mapping(resource_name)
@@ -602,8 +658,7 @@ class SyncEngine:
             raise
         except Exception as exc:
             _LOGGER.error("Unexpected error processing %s: %s", resource_name, exc)
-            result.failed += 1
-            result.errors.append(f"{resource_name}: {exc}")
+            result.record_failure(f"{resource_name}: {exc}")
 
     async def _apply(self, decision: _Decision, result: SyncResult) -> None:
         if decision.action is SyncAction.CREATE:
@@ -658,8 +713,7 @@ class SyncEngine:
             raise
         except Exception as exc:
             _LOGGER.error("Failed to list Outlook contacts for dedup: %s", exc)
-            result.failed += 1
-            result.errors.append(f"Dedup listing failed: {exc}")
+            result.record_failure(f"Dedup listing failed: {exc}")
             return
 
         contacts = [OutlookContact.from_graph(item) for item in raw]
@@ -702,8 +756,7 @@ class SyncEngine:
                     _LOGGER.error(
                         "Failed to delete duplicate %s: %s", contact.contact_id, exc
                     )
-                    result.failed += 1
-                    result.errors.append(f"Dedup delete failed: {exc}")
+                    result.record_failure(f"Dedup delete failed: {exc}")
                     continue
                 self._store.repoint_mapping(contact.contact_id, keeper.contact_id)
                 result.duplicates_removed += 1
