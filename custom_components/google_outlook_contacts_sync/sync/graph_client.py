@@ -7,7 +7,7 @@ import time
 from typing import Any, Never
 
 from O365 import Account  # type: ignore[import-untyped]
-from requests import HTTPError
+from requests import HTTPError  # type: ignore[import-untyped]
 
 from ..auth import CredentialStatus
 from ..auth.ms_auth import refresh_access_token
