@@ -13,6 +13,8 @@ from custom_components.google_outlook_contacts_sync.sync import (
     graph_client as graph_client_module,
 )
 from custom_components.google_outlook_contacts_sync.sync.engine import (
+    ABORT_AFTER_FAILURES,
+    MAX_REPORTED_ERRORS,
     SyncEngine,
     SyncPlan,
     SyncResult,
@@ -308,6 +310,18 @@ class TestSyncResult:
     def test_summary_includes_failures_only_when_present(self) -> None:
         assert "failed" not in SyncResult(created=1).summary()
         assert "failed" in SyncResult(failed=2).summary()
+
+    def test_summary_marks_an_aborted_run(self) -> None:
+        assert "aborted" not in SyncResult(failed=2).summary()
+        assert SyncResult(failed=10, aborted=True).summary().endswith("aborted")
+
+    def test_record_failure_counts_all_but_keeps_only_the_report_limit(self) -> None:
+        r = SyncResult()
+        for i in range(MAX_REPORTED_ERRORS + 5):
+            r.record_failure(f"people/c{i}: boom")
+        assert r.failed == MAX_REPORTED_ERRORS + 5
+        assert len(r.errors) == MAX_REPORTED_ERRORS
+        assert r.errors[0] == "people/c0: boom"
 
 
 class TestFieldClearing:
@@ -1436,3 +1450,104 @@ class TestMicrosoftTokenCheck:
 
         con.get.assert_not_called()
         con.post.assert_not_called()
+
+
+def _mapped_people(count: int) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """*count* Google contacts, each already mapped to an Outlook contact."""
+    people = [
+        {
+            "resourceName": f"people/c{i}",
+            "names": [{"displayName": f"Person {i}"}],
+        }
+        for i in range(count)
+    ]
+    mapping = {f"people/c{i}": f"graph-{i}" for i in range(count)}
+    return people, mapping
+
+
+class TestSystematicFailure:
+    """Every write failing must not turn into an endless loop of full resyncs."""
+
+    @pytest.mark.asyncio
+    async def test_full_sync_stops_when_every_write_fails(
+        self, hass: MagicMock
+    ) -> None:
+        people, mapping = _mapped_people(ABORT_AFTER_FAILURES + 5)
+        outlook = [{"id": cid} for cid in mapping.values()] + [{"id": "graph-orphan"}]
+        mapping["people/gone"] = "graph-orphan"
+        engine, _, graph, store = _make_engine(
+            hass,
+            people,
+            sync_token="tok_fresh",
+            existing_mapping=mapping,
+            outlook_raw=outlook,
+            delete_removed=True,
+        )
+        graph.update_contact.side_effect = RuntimeError("HTTP 500")
+
+        result = await engine.async_full_sync()
+
+        assert result.aborted is True
+        assert graph.update_contact.call_count == ABORT_AFTER_FAILURES
+        assert result.failed == ABORT_AFTER_FAILURES
+        assert "aborted" in result.errors[-1]
+        # The cursor is neither discarded nor replaced by the unverified one.
+        assert store.sync_token == "token_stored"
+        # No orphan delete on top of a systematic failure.
+        graph.delete_contact.assert_not_called()
+        store.async_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_one_success_means_failures_are_per_contact(
+        self, hass: MagicMock
+    ) -> None:
+        people, mapping = _mapped_people(ABORT_AFTER_FAILURES + 5)
+        engine, _, graph, store = _make_engine(
+            hass,
+            people,
+            sync_token="tok_fresh",
+            existing_mapping=mapping,
+            outlook_raw=[{"id": cid} for cid in mapping.values()],
+        )
+        graph.update_contact.side_effect = [None] + [RuntimeError("boom")] * (
+            ABORT_AFTER_FAILURES + 4
+        )
+
+        result = await engine.async_full_sync()
+
+        assert result.aborted is False
+        assert graph.update_contact.call_count == ABORT_AFTER_FAILURES + 5
+        assert result.updated == 1
+        assert result.failed == ABORT_AFTER_FAILURES + 4
+        assert store.sync_token is None
+
+    @pytest.mark.asyncio
+    async def test_reported_errors_are_capped(self, hass: MagicMock) -> None:
+        count = MAX_REPORTED_ERRORS + 10
+        people, mapping = _mapped_people(count)
+        engine, _, graph, _ = _make_engine(
+            hass,
+            people,
+            existing_mapping=mapping,
+            outlook_raw=[{"id": cid} for cid in mapping.values()],
+        )
+        graph.update_contact.side_effect = [None] + [RuntimeError("boom")] * (count - 1)
+
+        result = await engine.async_full_sync()
+
+        assert result.failed == count - 1
+        assert len(result.errors) == MAX_REPORTED_ERRORS
+
+    @pytest.mark.asyncio
+    async def test_delta_sync_stops_and_keeps_its_cursor(self, hass: MagicMock) -> None:
+        people, mapping = _mapped_people(ABORT_AFTER_FAILURES + 5)
+        engine, _, graph, store = _make_engine(
+            hass, people, sync_token="tok_new", existing_mapping=mapping
+        )
+        graph.update_contact.side_effect = RuntimeError("HTTP 500")
+
+        result = await engine.async_sync()
+
+        assert result.aborted is True
+        assert graph.update_contact.call_count == ABORT_AFTER_FAILURES
+        assert store.sync_token == "token_stored"
