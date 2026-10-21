@@ -40,9 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   messages exceeded the recorder's 16 KB attribute limit. `failed` still
   counts every failure.
 - **A run stops after 10 failed contact writes without a single success.** A
-  systematic failure no longer repeats for every contact on every run, and an
-  aborted full resync leaves the sync token as it was instead of discarding
-  it. The result sensor shows `aborted`.
+  systematic failure no longer sends a request for every contact on every
+  run. An aborted full resync still discards the sync token, so the next run
+  reconciles in full again. The result sensor shows `aborted`.
 - **A revoked or expired Microsoft sign-in now starts re-authorization**
   (#38). When O365's token refresh failed, it raised a bare `RuntimeError`, so
   the run only counted failed contacts and never asked to re-authorize. Every

@@ -384,11 +384,11 @@ class SyncEngine:
                 break
 
         if result.aborted:
-            # Nothing was written, so Outlook is exactly as the stored cursor
-            # left it: the cursor stays as it is instead of being discarded,
-            # and orphan deletes or dedup on top of a systematic failure would
-            # only fail as well.
-            await self._persist(result, started)
+            # Orphan deletes or dedup on top of a systematic failure would only
+            # fail as well. The cursor is still discarded below: the contacts
+            # this run never reached may have last changed before it, so only
+            # another full resync delivers them again.
+            await self._finalize_full(result, started, new_sync_token)
             _LOGGER.error("Full resync aborted: %s", result.summary())
             return result
 

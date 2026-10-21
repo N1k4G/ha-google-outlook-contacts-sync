@@ -1491,11 +1491,38 @@ class TestSystematicFailure:
         assert graph.update_contact.call_count == ABORT_AFTER_FAILURES
         assert result.failed == ABORT_AFTER_FAILURES
         assert "aborted" in result.errors[-1]
-        # The cursor is neither discarded nor replaced by the unverified one.
-        assert store.sync_token == "token_stored"
+        # Discarded like any failed full resync, never replaced by the new one.
+        assert store.sync_token is None
         # No orphan delete on top of a systematic failure.
         graph.delete_contact.assert_not_called()
         store.async_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_after_an_aborted_full_sync_retries_every_contact(
+        self, hass: MagicMock
+    ) -> None:
+        """Keeping the old cursor made the next delta skip the unreached contacts."""
+        count = ABORT_AFTER_FAILURES + 5
+        people, mapping = _mapped_people(count)
+        engine, google, graph, _ = _make_engine(
+            hass,
+            people,
+            sync_token="tok_fresh",
+            existing_mapping=mapping,
+            outlook_raw=[{"id": cid} for cid in mapping.values()],
+        )
+        graph.update_contact.side_effect = RuntimeError("HTTP 500")
+        await engine.async_full_sync()
+
+        graph.update_contact.reset_mock(side_effect=True)
+        google.fetch_contacts.reset_mock()
+
+        result = await engine.async_sync()
+
+        google.fetch_contacts.assert_called_once_with(None)
+        assert graph.update_contact.call_count == count
+        assert result.updated == count
+        assert result.failed == 0
 
     @pytest.mark.asyncio
     async def test_one_success_means_failures_are_per_contact(
