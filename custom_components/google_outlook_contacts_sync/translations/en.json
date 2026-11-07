@@ -3,10 +3,14 @@
     "step": {
       "ms_credentials": {
         "title": "Microsoft Account — App Credentials",
-        "description": "Enter the Client ID and Client Secret from your Entra App Registration.",
+        "description": "Device code is recommended: enter the Microsoft client ID, then enter the displayed code at Microsoft and sign in. This mode needs no client secret. The previous login with a secret remains available.",
         "data": {
           "ms_client_id": "Microsoft Client ID",
-          "ms_client_secret": "Microsoft Client Secret"
+          "ms_client_secret": "Microsoft Client Secret",
+          "ms_auth_mode": "Microsoft sign-in method"
+        },
+        "data_description": {
+          "ms_client_secret": "Only for login with a secret. Leave empty to retain an existing secret. Device code ignores this field."
         }
       },
       "ms_auth_url": {
@@ -47,17 +51,22 @@
       },
       "reconfigure": {
         "title": "Change App Credentials",
-        "description": "Update the client IDs and secrets of your Entra App Registration and Google Cloud OAuth client. Leave a secret empty to keep the stored one. A new secret is checked against your existing sign-in before it is saved, so tokens and the contact mapping are kept. A changed client ID needs its new secret and a fresh sign-in with that provider.",
+        "description": "Choose device code to use Microsoft without a secret. Changing the method or client ID requires a new Microsoft sign-in; the existing entry stays active until success. With the same sign-in method, an empty secret field keeps the stored secret. Google sign-in and the contact mapping are preserved.",
         "data": {
           "ms_client_id": "Microsoft Client ID",
           "ms_client_secret": "New Microsoft Client Secret (optional)",
           "google_client_id": "Google Client ID",
-          "google_client_secret": "New Google Client Secret (optional)"
+          "google_client_secret": "New Google Client Secret (optional)",
+          "ms_auth_mode": "Microsoft sign-in method"
         },
         "data_description": {
-          "ms_client_secret": "Leave empty to keep the stored secret.",
+          "ms_client_secret": "Only for login with a secret. Leave empty to retain an existing secret. Device code ignores this field.",
           "google_client_secret": "Leave empty to keep the stored secret."
         }
+      },
+      "ms_device_failed": {
+        "title": "Retry Microsoft sign-in",
+        "description": "Nothing was saved. Submit to request a new code."
       }
     },
     "error": {
@@ -66,17 +75,31 @@
       "cannot_connect": "Unable to connect. Check your credentials and network connection.",
       "unknown": "Unexpected error. Check the Home Assistant logs.",
       "ms_url_failed": "Could not build the Microsoft sign-in URL. Check your credentials and the Home Assistant logs.",
-      "ms_invalid_client": "Microsoft rejected the client credentials. Check the client secret (it may be wrong or expired) and try again. Nothing was saved.",
+      "ms_invalid_client": "Microsoft rejected the app credentials. For device code, enable public client flows in Entra. For secret login, check the secret. Nothing was saved.",
       "google_invalid_client": "Google rejected the client credentials. Check the client secret and try again. Nothing was saved.",
       "missing_client_id": "Client IDs must not be empty.",
-      "new_client_requires_secret": "A changed client ID needs the client secret that belongs to it."
+      "new_client_requires_secret": "A changed client ID needs the client secret that belongs to it.",
+      "ms_invalid_mode": "Unknown Microsoft sign-in method.",
+      "ms_device_failed": "Microsoft device sign-in failed. Check the app registration and try again.",
+      "ms_device_denied": "Microsoft sign-in was declined.",
+      "ms_device_expired": "The Microsoft code expired. Request a new code.",
+      "ms_device_cancelled": "Microsoft sign-in was cancelled. Nothing was saved.",
+      "ms_device_account_mismatch": "Sign in with the same Microsoft account as before. The contact mapping belongs to that account. Nothing was saved."
     },
     "abort": {
       "already_configured": "This integration is already configured.",
       "ms_auth_timeout": "Microsoft authorization timed out. Please restart the setup.",
       "reauth_successful": "Re-authentication was successful.",
       "missing_external_url": "Home Assistant external URL is not configured. Go to Settings → System → Network and set the Home Assistant URL, then try again.",
-      "reconfigure_successful": "The app credentials were updated."
+      "reconfigure_successful": "The app credentials were updated.",
+      "ms_invalid_mode": "Unknown Microsoft sign-in method.",
+      "ms_device_failed": "Microsoft device sign-in failed. Check the app registration and try again.",
+      "ms_device_denied": "Microsoft sign-in was declined.",
+      "ms_device_expired": "The Microsoft code expired. Request a new code.",
+      "ms_device_cancelled": "Microsoft sign-in was cancelled. Nothing was saved."
+    },
+    "progress": {
+      "ms_device": "Open [Microsoft sign-in]({verification_uri}) and enter code **{user_code}**. Sign in with your personal Microsoft account and approve contacts access. This page waits for confirmation. Only complete a login you started for your own Home Assistant."
     }
   },
   "options": {
@@ -137,6 +160,14 @@
     "full_sync": {
       "name": "Full Resync",
       "description": "Run a full reconciliation: adopt existing Outlook contacts on a unique email match, fix drift, reconcile removed contacts, and reset the delta token."
+    }
+  },
+  "selector": {
+    "ms_auth_mode": {
+      "options": {
+        "device_code": "Device code (no secret, recommended)",
+        "confidential": "Login with client secret"
+      }
     }
   }
 }

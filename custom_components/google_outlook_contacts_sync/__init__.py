@@ -9,13 +9,14 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers.typing import ConfigType
 
 from .auth.ms_auth import HAStoreTokenBackend, build_account
 from .const import (
     CONF_AUTO_REMOVE_DUPLICATES,
     CONF_DELETE_REMOVED,
+    CONF_MS_AUTH_MODE,
     CONF_MS_CLIENT_ID,
     CONF_MS_CLIENT_SECRET,
     DATA_COORDINATOR,
@@ -25,6 +26,9 @@ from .const import (
     DEFAULT_AUTO_REMOVE_DUPLICATES,
     DEFAULT_DELETE_REMOVED,
     DOMAIN,
+    MS_AUTH_CONFIDENTIAL,
+    MS_AUTH_DEVICE_CODE,
+    MS_AUTH_MODES,
     SERVICE_FULL_SYNC,
     SERVICE_SYNC_NOW,
 )
@@ -82,11 +86,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     ms_token: dict[str, Any] = data.get("ms_token") or {}
+    ms_mode = data.get(CONF_MS_AUTH_MODE, MS_AUTH_CONFIDENTIAL)
+    if ms_mode not in MS_AUTH_MODES:
+        raise ConfigEntryError("Unknown Microsoft authentication mode")
+    ms_secret = data.get(CONF_MS_CLIENT_SECRET, "")
+    if ms_mode == MS_AUTH_CONFIDENTIAL and not ms_secret:
+        _store_reauth_provider(hass, entry, "ms")
+        raise ConfigEntryAuthFailed("Microsoft client secret is missing")
     account, ms_backend = await hass.async_add_executor_job(
         build_account,
         data[CONF_MS_CLIENT_ID],
-        data[CONF_MS_CLIENT_SECRET],
+        "" if ms_mode == MS_AUTH_DEVICE_CODE else ms_secret,
         ms_token,
+        ms_mode,
     )
 
     if not await hass.async_add_executor_job(lambda: account.is_authenticated):

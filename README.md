@@ -28,15 +28,24 @@ You need two sets of OAuth credentials — one for Microsoft, one for Google. Bo
 
 ### 1. Microsoft Entra App Registration
 
-1. Go to [portal.azure.com](https://portal.azure.com) → **Entra ID → App registrations → New registration**.
-2. Name: anything (e.g. "HA Google Outlook Contacts Sync").
-3. Supported account types: **Accounts in any organizational directory and personal Microsoft accounts**.
-4. Redirect URI (Web): `https://<your-ha-external-url>/api/google_outlook_contacts_sync/auth`
-5. After creation go to **API permissions → Add a permission → Microsoft Graph → Delegated** and add:
-   - `Contacts.ReadWrite`
-   - `User.Read`
-6. Go to **Certificates & secrets → New client secret**. Copy the value immediately — it is shown only once.
-7. Note the **Application (client) ID** from the Overview page.
+1. In [Entra App registrations](https://portal.azure.com), create an application
+   supporting **Accounts in any organizational directory and personal Microsoft
+   accounts**. Keep the Application (client) ID.
+2. Add Microsoft Graph **delegated** permissions `Contacts.ReadWrite` and
+   `User.Read`. The integration signs in the user; it does not use app-only
+   permissions.
+3. For the recommended **Device code** method, open **Authentication**, enable
+   **Allow public client flows**, and save. No Microsoft client secret or
+   Microsoft redirect URI is needed for this method.
+4. For the optional previous **Login with client secret** method, register a
+   **Web** redirect URI
+   `https://<your-ha-external-url>/api/google_outlook_contacts_sync/auth` and
+   create a client secret under **Certificates & secrets**.
+
+If this registration is managed by
+[N1k4G/infrastructure](https://github.com/N1k4G/infrastructure), apply its additive
+`fallback_public_client_enabled = true` change through HCP before migrating HA.
+Existing installations can keep using their previous login during the rollout.
 
 ### 2. Google Cloud Project and OAuth Client
 
@@ -75,12 +84,43 @@ Copy the `custom_components/google_outlook_contacts_sync` folder into your HA `c
 
 Before starting, make sure Home Assistant knows its external URL: **Settings → System → Network → Home Assistant URL**.
 
-1. Go to **Settings → Devices & Services → Add Integration** → search "Google Outlook Contacts Sync".
-2. **Step 1 — Microsoft credentials:** Enter the Client ID and Client Secret from your Entra app.
-3. **Step 2 — Microsoft authorization:** A browser window opens. Sign in with your personal Microsoft account and grant contacts access. You are redirected back to HA automatically.
-4. **Step 3 — Google credentials:** Enter the Client ID and Client Secret from your Google Web OAuth client.
-5. **Step 4 — Google authorization:** A browser window opens. Sign in with your Google account and grant contacts access. You are redirected back to HA automatically.
-6. The first full sync runs immediately. Subsequent runs use delta sync.
+1. In **Settings → Devices & Services → Add Integration**, search for
+   "Google Outlook Contacts Sync".
+2. Select **Device code (no secret, recommended)** and enter the Microsoft
+   client ID. Leave the Microsoft secret empty.
+3. Open the Microsoft sign-in link displayed by Home Assistant, enter the
+   displayed code, and approve contacts access with your personal Microsoft
+   account. HA waits for confirmation and verifies token refresh before saving.
+   Only authorize a code you requested from your own HA instance.
+4. Enter the Google Web OAuth client ID and secret, then complete Google
+   sign-in in the browser. Google's existing external URL and callback
+   requirements still apply.
+5. The first full sync runs immediately; subsequent runs use delta sync.
+
+The previous Microsoft secret-based method is still available. It uses the
+existing browser callback instead of a device code.
+
+### Migrate an existing Microsoft login
+
+Open the integration menu and choose **Reconfigure**. Keep the client IDs,
+select **Device code**, and submit. Complete a fresh Microsoft login with the
+new code, using the same Microsoft account as before. Until login and its refresh check succeed, the stored credentials and
+running configuration are unchanged. A failed or cancelled attempt saves
+nothing. On success HA preserves Google authorization, the contact mapping,
+options and entity identity, removes the Microsoft secret from the entry and
+reloads the integration.
+
+There is no annual Microsoft client-secret rotation in device-code mode.
+Microsoft can still require a new sign-in after a revocation or other account
+policy change; use HA's reauthentication flow when requested. Restarting HA
+while a sign-in is pending discards that attempt; request a new code.
+
+Keep the Entra application secret during rollout if other installations still
+use it. Revoke it and remove Terraform secret resources/outputs only after all
+consumers have migrated and live login, forced refresh, restart and scheduled
+sync have passed. Removing the key from the current entry does not erase old
+HA backups or Terraform state history. See the
+[migration and live acceptance checklist](docs/microsoft-device-code-migration.md).
 
 ---
 

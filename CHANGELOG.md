@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - Unreleased
+
+### Added
+- Microsoft device-code login without a client secret, including setup, reauth
+  and explicit migration through Reconfigure. Previous entries retain their
+  existing login method until intentionally migrated.
+- Cancellable HA progress, bounded polling/timeouts, pending/slow-down handling,
+  and a forced refresh check before saving a new Microsoft login.
+- Atomic secret removal from migrated entries while preserving Google tokens,
+  contact mappings, options and entity identity; SDK and migration regressions.
+- A separate infrastructure rollout and live acceptance checklist. The Entra
+  application password is retained until all consumers have migrated.
+
+### Changed
+- Pin O365 2.1.9 and MSAL 1.37.0 to the tested SDK contract.
+- Exclude single-use OAuth codes from MSAL cache debug-event data.
+
 ## [Unreleased]
 
 ### Upgrade notes

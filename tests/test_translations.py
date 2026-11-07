@@ -66,3 +66,40 @@ def test_google_step_does_not_promise_a_desktop_client() -> None:
         description = _load(path)["config"]["step"]["google_credentials"]["description"]
         assert "Desktop" not in description
         assert "Desktop-Client" not in description
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "phrases"),
+    [
+        (
+            "step",
+            "ms_credentials",
+            ["best\u00e4tige", "daf\u00fcr", "ben\u00f6tigt", "verf\u00fcgbar"],
+        ),
+        ("step", "reconfigure", ["W\u00e4hle", "unver\u00e4nderter", "beh\u00e4lt"]),
+        ("error", "ms_invalid_client", ["f\u00fcr", "\u00f6ffentlichen", "pr\u00fcfe"]),
+        ("error", "ms_device_failed", ["Pr\u00fcfe"]),
+        ("error", "ms_device_account_mismatch", ["geh\u00f6rt"]),
+        ("abort", "ms_device_failed", ["Pr\u00fcfe"]),
+        (
+            "progress",
+            "ms_device",
+            [
+                "\u00d6ffne",
+                "pers\u00f6nlichen",
+                "best\u00e4tige",
+                "Best\u00e4tigung",
+                "f\u00fcr",
+            ],
+        ),
+    ],
+)
+def test_german_device_login_preserves_unicode(section, key, phrases) -> None:
+    """Valid JSON can still contain '?' substitutions from a lossy code page."""
+    value = _load(COMPONENT / "translations" / "de.json")["config"][section][key]
+    if section == "step":
+        value = value["description"]
+    for phrase in phrases:
+        assert phrase in value
+    assert "?" not in value
+    assert "\ufffd" not in value

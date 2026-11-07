@@ -3,10 +3,14 @@
     "step": {
       "ms_credentials": {
         "title": "Microsoft-Konto — App-Anmeldedaten",
-        "description": "Gib die Client-ID und das Client-Secret aus deiner Entra-App-Registrierung ein.",
+        "description": "Device Code wird empfohlen: Gib die Microsoft-Client-ID ein, bestätige den angezeigten Code bei Microsoft und melde dich an. Ein Client-Secret wird dafür nicht benötigt. Die bisherige Anmeldung mit Secret bleibt verfügbar.",
         "data": {
           "ms_client_id": "Microsoft Client-ID",
-          "ms_client_secret": "Microsoft Client-Secret"
+          "ms_client_secret": "Microsoft Client-Secret",
+          "ms_auth_mode": "Microsoft-Anmeldung"
+        },
+        "data_description": {
+          "ms_client_secret": "Nur bei Anmeldung mit Secret. Leer lassen, um ein bestehendes Secret zu behalten. Device Code ignoriert dieses Feld."
         }
       },
       "ms_auth_url": {
@@ -47,17 +51,22 @@
       },
       "reconfigure": {
         "title": "App-Anmeldedaten ändern",
-        "description": "Aktualisiere Client-IDs und -Secrets deiner Entra-App-Registrierung und deines Google Cloud OAuth-Clients. Lass ein Secret leer, um das gespeicherte beizubehalten. Ein neues Secret wird vor dem Speichern gegen deine bestehende Anmeldung geprüft; Tokens und Kontakt-Zuordnung bleiben erhalten. Eine geänderte Client-ID braucht ihr neues Secret und eine erneute Anmeldung beim jeweiligen Anbieter.",
+        "description": "Wähle Device Code, um Microsoft ohne Secret zu verwenden. Der Wechsel oder eine neue Client-ID erfordert eine neue Microsoft-Anmeldung. Bis zum Erfolg bleiben die bestehenden Daten aktiv. Bei unveränderter Anmeldung behält ein leeres Secret-Feld das gespeicherte Secret. Google-Anmeldung und Kontaktzuordnung bleiben erhalten.",
         "data": {
           "ms_client_id": "Microsoft Client-ID",
           "ms_client_secret": "Neues Microsoft Client-Secret (optional)",
           "google_client_id": "Google Client-ID",
-          "google_client_secret": "Neues Google Client-Secret (optional)"
+          "google_client_secret": "Neues Google Client-Secret (optional)",
+          "ms_auth_mode": "Microsoft-Anmeldung"
         },
         "data_description": {
-          "ms_client_secret": "Leer lassen, um das gespeicherte Secret beizubehalten.",
+          "ms_client_secret": "Nur bei Anmeldung mit Secret. Leer lassen, um ein bestehendes Secret zu behalten. Device Code ignoriert dieses Feld.",
           "google_client_secret": "Leer lassen, um das gespeicherte Secret beizubehalten."
         }
+      },
+      "ms_device_failed": {
+        "title": "Microsoft-Anmeldung erneut versuchen",
+        "description": "Es wurde nichts gespeichert. Klicke auf Absenden, um einen neuen Code anzufordern."
       }
     },
     "error": {
@@ -66,17 +75,31 @@
       "google_auth_failed": "Google-Autorisierung fehlgeschlagen. Überprüfe deine Client-Anmeldedaten und den Autorisierungscode.",
       "cannot_connect": "Verbindung nicht möglich. Überprüfe deine Anmeldedaten und die Netzwerkverbindung.",
       "unknown": "Unerwarteter Fehler. Prüfe die Home Assistant-Protokolle.",
-      "ms_invalid_client": "Microsoft hat die Client-Anmeldedaten abgelehnt. Prüfe das Client-Secret (es kann falsch oder abgelaufen sein) und versuche es erneut. Es wurde nichts gespeichert.",
+      "ms_invalid_client": "Microsoft hat die App-Anmeldung abgelehnt. Aktiviere für Device Code die öffentlichen Clientflows in Entra. Bei Anmeldung mit Secret prüfe das Secret. Es wurde nichts gespeichert.",
       "google_invalid_client": "Google hat die Client-Anmeldedaten abgelehnt. Prüfe das Client-Secret und versuche es erneut. Es wurde nichts gespeichert.",
       "missing_client_id": "Die Client-IDs dürfen nicht leer sein.",
-      "new_client_requires_secret": "Eine geänderte Client-ID braucht das zugehörige Client-Secret."
+      "new_client_requires_secret": "Eine geänderte Client-ID braucht das zugehörige Client-Secret.",
+      "ms_invalid_mode": "Unbekannte Microsoft-Anmeldemethode.",
+      "ms_device_failed": "Microsoft-Anmeldung fehlgeschlagen. Prüfe die App-Registrierung und versuche es erneut.",
+      "ms_device_denied": "Die Microsoft-Anmeldung wurde abgelehnt.",
+      "ms_device_expired": "Der Microsoft-Code ist abgelaufen. Fordere einen neuen Code an.",
+      "ms_device_cancelled": "Die Microsoft-Anmeldung wurde abgebrochen. Es wurde nichts gespeichert.",
+      "ms_device_account_mismatch": "Melde dich mit demselben Microsoft-Konto wie bisher an. Die Kontaktzuordnung gehört zu diesem Konto. Es wurde nichts gespeichert."
     },
     "abort": {
       "already_configured": "Diese Integration ist bereits konfiguriert.",
       "missing_external_url": "Die externe URL von Home Assistant ist nicht konfiguriert. Gehe zu Einstellungen → System → Netzwerk und trage die Home Assistant-URL ein, dann versuche es erneut.",
       "ms_auth_timeout": "Microsoft-Autorisierung abgelaufen. Bitte starte die Einrichtung neu.",
       "reauth_successful": "Erneute Authentifizierung erfolgreich.",
-      "reconfigure_successful": "Die App-Anmeldedaten wurden aktualisiert."
+      "reconfigure_successful": "Die App-Anmeldedaten wurden aktualisiert.",
+      "ms_invalid_mode": "Unbekannte Microsoft-Anmeldemethode.",
+      "ms_device_failed": "Microsoft-Anmeldung fehlgeschlagen. Prüfe die App-Registrierung und versuche es erneut.",
+      "ms_device_denied": "Die Microsoft-Anmeldung wurde abgelehnt.",
+      "ms_device_expired": "Der Microsoft-Code ist abgelaufen. Fordere einen neuen Code an.",
+      "ms_device_cancelled": "Die Microsoft-Anmeldung wurde abgebrochen. Es wurde nichts gespeichert."
+    },
+    "progress": {
+      "ms_device": "Öffne [Microsoft-Anmeldung]({verification_uri}) und gib den Code **{user_code}** ein. Melde dich mit deinem persönlichen Microsoft-Konto an und bestätige den Zugriff auf Kontakte. Diese Seite wartet auf die Bestätigung. Starte diesen Vorgang nur für dein eigenes Home Assistant."
     }
   },
   "options": {
@@ -137,6 +160,14 @@
     "full_sync": {
       "name": "Vollständige Neusynchronisierung",
       "description": "Führt einen vollständigen Abgleich durch: übernimmt bestehende Outlook-Kontakte über den Namen, korrigiert Abweichungen und setzt den Delta-Token zurück."
+    }
+  },
+  "selector": {
+    "ms_auth_mode": {
+      "options": {
+        "device_code": "Device Code (ohne Secret, empfohlen)",
+        "confidential": "Anmeldung mit Client-Secret"
+      }
     }
   }
 }

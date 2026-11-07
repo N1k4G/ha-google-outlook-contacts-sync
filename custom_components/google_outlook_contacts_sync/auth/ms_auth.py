@@ -14,15 +14,34 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from O365 import Account  # type: ignore[import-untyped]
 from O365.utils.token import BaseTokenBackend  # type: ignore[import-untyped]
 
-from ..const import MS_AUTH_CALLBACK_PATH, MS_SCOPES
+from ..const import (
+    MS_AUTH_CALLBACK_PATH,
+    MS_AUTH_CONFIDENTIAL,
+    MS_AUTH_DEVICE_CODE,
+    MS_SCOPES,
+)
 from . import CredentialCheck, CredentialStatus
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _BearerLogFilter(logging.Filter):
+    """O365 logs session headers at DEBUG; redact the rendered copy only."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = re.sub(
+            r"(?i)\bBearer[ \t]+[A-Za-z0-9._~+/=-]+",
+            "Bearer [REDACTED]",
+            record.getMessage(),
+        )
+        record.args = ()
+        return True
 
 
 class HAStoreTokenBackend(BaseTokenBackend):  # type: ignore[misc]
@@ -37,6 +56,21 @@ class HAStoreTokenBackend(BaseTokenBackend):  # type: ignore[misc]
     def __init__(self, token_dict: dict[str, Any] | None = None) -> None:
         super().__init__()
         self._token: dict[str, Any] = token_dict or {}
+
+    def add(self, event: dict[str, Any], **kwargs: Any) -> None:
+        """Exclude single-use protocol secrets from the SDK's cache debug log.
+
+        MSAL 1.37 masks tokens but not device_code, code or code_verifier in
+        cache-event data. These fields do not participate in token cache keys;
+        dropping them here preserves caching without logging one-time secrets.
+        """
+        clean = dict(event)
+        clean["data"] = {
+            key: value
+            for key, value in event.get("data", {}).items()
+            if key not in {"device_code", "code", "code_verifier"}
+        }
+        super().add(clean, **kwargs)
 
     def load_token(self) -> bool:
         if not self._token:
@@ -78,14 +112,31 @@ def build_account(
     client_id: str,
     client_secret: str,
     token_dict: dict[str, Any] | None = None,
+    auth_mode: str = MS_AUTH_CONFIDENTIAL,
 ) -> tuple[Account, HAStoreTokenBackend]:
-    """Create an O365 Account and the associated token backend."""
+    """Build a mode-aware account; missing mode preserves legacy credentials."""
+    sdk_logger = logging.getLogger("O365.connection")
+    if not any(isinstance(item, _BearerLogFilter) for item in sdk_logger.filters):
+        sdk_logger.addFilter(_BearerLogFilter())
     backend = HAStoreTokenBackend(token_dict)
-    account = Account(
-        (client_id, client_secret),
-        token_backend=backend,
-        tenant_id="consumers",
-    )
+    if auth_mode == MS_AUTH_DEVICE_CODE:
+        account = Account(
+            (client_id,),
+            auth_flow_type="public",
+            token_backend=backend,
+            tenant_id="consumers",
+            timeout=(5, 10),
+        )
+    elif auth_mode == MS_AUTH_CONFIDENTIAL:
+        if not client_secret:
+            raise ValueError("A confidential Microsoft client needs a secret")
+        account = Account(
+            (client_id, client_secret),
+            token_backend=backend,
+            tenant_id="consumers",
+        )
+    else:
+        raise ValueError("Unknown Microsoft authentication mode")
     return account, backend
 
 

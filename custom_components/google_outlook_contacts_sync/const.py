@@ -3,6 +3,10 @@
 DOMAIN = "google_outlook_contacts_sync"
 
 # Config entry keys
+CONF_MS_AUTH_MODE = "ms_auth_mode"
+MS_AUTH_CONFIDENTIAL = "confidential"
+MS_AUTH_DEVICE_CODE = "device_code"
+MS_AUTH_MODES = (MS_AUTH_DEVICE_CODE, MS_AUTH_CONFIDENTIAL)
 CONF_MS_CLIENT_ID = "ms_client_id"
 CONF_MS_CLIENT_SECRET = "ms_client_secret"
 CONF_GOOGLE_CLIENT_ID = "google_client_id"
