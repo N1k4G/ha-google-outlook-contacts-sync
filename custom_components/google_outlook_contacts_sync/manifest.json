@@ -11,11 +11,12 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/N1k4G/ha-google-outlook-contacts-sync/issues",
   "requirements": [
-    "O365>=2.0.27",
+    "O365==2.1.9",
+    "msal==1.37.0",
     "google-api-python-client>=2.71.0",
     "google-auth>=2.30.0",
     "google-auth-oauthlib>=1.2.0"
   ],
   "single_config_entry": true,
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

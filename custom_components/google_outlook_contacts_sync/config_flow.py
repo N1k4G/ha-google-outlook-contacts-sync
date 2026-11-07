@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import voluptuous as vol
@@ -12,8 +14,12 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
-from homeassistant.core import callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, callback
 from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -33,11 +39,13 @@ from .auth.ms_auth import (
 from .auth.ms_auth import (
     get_auth_url as ms_get_auth_url,
 )
+from .auth.ms_device import DeviceAuthorization, DeviceLoginError, start_device_login
 from .const import (
     CONF_AUTO_REMOVE_DUPLICATES,
     CONF_DELETE_REMOVED,
     CONF_GOOGLE_CLIENT_ID,
     CONF_GOOGLE_CLIENT_SECRET,
+    CONF_MS_AUTH_MODE,
     CONF_MS_CLIENT_ID,
     CONF_MS_CLIENT_SECRET,
     CONF_SYNC_INTERVAL_HOURS,
@@ -49,6 +57,9 @@ from .const import (
     DEFAULT_SYNC_INTERVAL_HOURS,
     DOMAIN,
     GOOGLE_AUTH_CALLBACK_PATH,
+    MS_AUTH_CONFIDENTIAL,
+    MS_AUTH_DEVICE_CODE,
+    MS_AUTH_MODES,
 )
 from .http import async_register_callback_views
 
@@ -58,10 +69,19 @@ _LOGGER = logging.getLogger(__name__)
 # secret field keeps the stored secret.
 _SECRET_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
+_MS_MODE_SELECTOR = SelectSelector(
+    SelectSelectorConfig(
+        options=list(MS_AUTH_MODES),
+        translation_key="ms_auth_mode",
+        mode=SelectSelectorMode.DROPDOWN,
+    )
+)
+
 _STEP_MS_CREDENTIALS = vol.Schema(
     {
+        vol.Required(CONF_MS_AUTH_MODE, default=MS_AUTH_DEVICE_CODE): _MS_MODE_SELECTOR,
         vol.Required(CONF_MS_CLIENT_ID): str,
-        vol.Required(CONF_MS_CLIENT_SECRET): _SECRET_SELECTOR,
+        vol.Optional(CONF_MS_CLIENT_SECRET): _SECRET_SELECTOR,
     }
 )
 
@@ -74,6 +94,7 @@ _STEP_GOOGLE_CREDENTIALS = vol.Schema(
 
 _STEP_RECONFIGURE = vol.Schema(
     {
+        vol.Required(CONF_MS_AUTH_MODE): _MS_MODE_SELECTOR,
         vol.Required(CONF_MS_CLIENT_ID): str,
         vol.Optional(CONF_MS_CLIENT_SECRET): _SECRET_SELECTOR,
         vol.Required(CONF_GOOGLE_CLIENT_ID): str,
@@ -108,6 +129,11 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
+        self._ms_auth_mode = MS_AUTH_DEVICE_CODE
+        self._device: DeviceAuthorization | None = None
+        self._device_task: asyncio.Task[dict[str, Any]] | None = None
+        self._device_unsub: Callable[[], None] | None = None
+        self._removed = False
         self._ms_client_id: str = ""
         self._ms_client_secret: str = ""
         self._ms_account: Any | None = None
@@ -144,6 +170,8 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         if reauth_entry is None:
             return await self.async_step_user()
         self._load_existing_entry(reauth_entry)
+        if self._ms_auth_mode not in MS_AUTH_MODES:
+            return self.async_abort(reason="ms_invalid_mode")
 
         failed_provider = (
             self.hass.data.get(DOMAIN, {})
@@ -162,6 +190,8 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         A revoked or expired secret is a common cause of the failure; reusing
         it would make the code exchange fail the same way again.
         """
+        if self._ms_auth_mode == MS_AUTH_DEVICE_CODE:
+            return await self.async_step_ms_device()
         if user_input is not None:
             new_secret = _field(user_input, CONF_MS_CLIENT_SECRET)
             if new_secret:
@@ -214,6 +244,9 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=self.add_suggested_values_to_schema(
                 _STEP_RECONFIGURE,
                 {
+                    CONF_MS_AUTH_MODE: shown.get(
+                        CONF_MS_AUTH_MODE, MS_AUTH_CONFIDENTIAL
+                    ),
                     CONF_MS_CLIENT_ID: shown.get(CONF_MS_CLIENT_ID, ""),
                     CONF_GOOGLE_CLIENT_ID: shown.get(CONF_GOOGLE_CLIENT_ID, ""),
                 },
@@ -230,6 +263,10 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         and tokens, and the *_needs_oauth flags name the providers that still
         need a fresh sign-in. Nothing is written to the entry here.
         """
+        ms_mode = user_input.get(CONF_MS_AUTH_MODE, self._ms_auth_mode)
+        if ms_mode not in MS_AUTH_MODES:
+            return {"base": "ms_invalid_mode"}
+        mode_changed = ms_mode != self._ms_auth_mode
         ms_id = _field(user_input, CONF_MS_CLIENT_ID)
         ms_secret = _field(user_input, CONF_MS_CLIENT_SECRET)
         google_id = _field(user_input, CONF_GOOGLE_CLIENT_ID)
@@ -240,17 +277,27 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         ms_id_changed = ms_id != self._ms_client_id
         google_id_changed = google_id != self._google_client_id
         # A secret belongs to its client; the old one cannot work for a new ID.
-        if (ms_id_changed and not ms_secret) or (
-            google_id_changed and not google_secret
-        ):
+        if (
+            ms_mode == MS_AUTH_CONFIDENTIAL
+            and (ms_id_changed or mode_changed)
+            and not ms_secret
+        ) or (google_id_changed and not google_secret):
             return {"base": "new_client_requires_secret"}
-        ms_secret = ms_secret or self._ms_client_secret
+        ms_secret = (
+            ""
+            if ms_mode == MS_AUTH_DEVICE_CODE
+            else ms_secret or self._ms_client_secret
+        )
         google_secret = google_secret or self._google_client_secret
 
         # A refresh token is bound to its client ID, so a new ID always needs
         # a sign-in; a new secret for the same ID is tried against the token.
-        self._ms_needs_oauth = ms_id_changed
-        if not ms_id_changed and ms_secret != self._ms_client_secret:
+        self._ms_needs_oauth = ms_id_changed or mode_changed
+        if (
+            ms_mode == MS_AUTH_CONFIDENTIAL
+            and not self._ms_needs_oauth
+            and ms_secret != self._ms_client_secret
+        ):
             check = await self.hass.async_add_executor_job(
                 ms_check_credentials, ms_id, ms_secret, self._ms_token
             )
@@ -277,6 +324,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 self._google_needs_oauth = True
 
+        self._ms_auth_mode = ms_mode
         self._ms_client_id = ms_id
         self._ms_client_secret = ms_secret
         self._google_client_id = google_id
@@ -288,6 +336,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         self._existing_entry = entry
         config_data = entry.data
         self._loaded_data = dict(config_data)
+        self._ms_auth_mode = config_data.get(CONF_MS_AUTH_MODE, MS_AUTH_CONFIDENTIAL)
         self._ms_client_id = config_data.get(CONF_MS_CLIENT_ID, "")
         self._ms_client_secret = config_data.get(CONF_MS_CLIENT_SECRET, "")
         self._ms_token = dict(config_data.get("ms_token") or {})
@@ -303,8 +352,24 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._ms_client_id = user_input[CONF_MS_CLIENT_ID].strip()
-            self._ms_client_secret = user_input[CONF_MS_CLIENT_SECRET].strip()
+            # Real forms always submit the mode. Missing mode preserves older
+            # callers using the existing confidential credentials step.
+            self._ms_auth_mode = user_input.get(CONF_MS_AUTH_MODE, MS_AUTH_CONFIDENTIAL)
+            if self._ms_auth_mode not in MS_AUTH_MODES:
+                return self._ms_credentials_form({"base": "ms_invalid_mode"})
+            self._ms_client_id = _field(user_input, CONF_MS_CLIENT_ID)
+            self._ms_client_secret = (
+                ""
+                if self._ms_auth_mode == MS_AUTH_DEVICE_CODE
+                else _field(user_input, CONF_MS_CLIENT_SECRET)
+            )
+            if not self._ms_client_id:
+                return self._ms_credentials_form({"base": "missing_client_id"})
+            if (
+                self._ms_auth_mode == MS_AUTH_CONFIDENTIAL
+                and not self._ms_client_secret
+            ):
+                return self._ms_credentials_form({"base": "new_client_requires_secret"})
             return await self.async_step_ms_auth_url()
 
         return self._ms_credentials_form(errors)
@@ -318,6 +383,8 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         async_external_step_done — not to a form. Token exchange therefore
         happens in async_step_ms_auth_callback.
         """
+        if self._ms_auth_mode == MS_AUTH_DEVICE_CODE:
+            return await self.async_step_ms_device()
         if user_input is not None:
             if "error" in user_input:
                 _LOGGER.error("MS OAuth error from callback: %s", user_input["error"])
@@ -390,6 +457,123 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_google_auth_url()
             return self._create_entry()
         return await self.async_step_google_credentials()
+
+    async def async_step_ms_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the code while a cancellable task polls Microsoft in the executor."""
+        if self._removed:
+            return self.async_abort(reason="ms_device_cancelled")
+        if self._device_task is None:
+            try:
+                async with asyncio.timeout(30):
+                    device = await self.hass.async_add_executor_job(
+                        start_device_login, self._ms_client_id
+                    )
+            except DeviceLoginError as exc:
+                return self._device_failure(str(exc))
+            except Exception:
+                return self._device_failure("cannot_connect")
+            if self._removed:
+                device.cancel()
+                return self.async_abort(reason="ms_device_cancelled")
+            self._device = device
+            self._device_task = self.hass.async_create_background_task(
+                device.async_wait(self.hass.async_add_executor_job),
+                "Microsoft device authorization",
+            )
+            self._device_unsub = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STOP, self._stop_device
+            )
+            if self._existing_entry is not None:
+                self._existing_entry.async_on_unload(self._stop_device)
+        if self._device_task.done():
+            return self.async_show_progress_done(next_step_id="ms_device_complete")
+        assert self._device is not None
+        return self.async_show_progress(
+            step_id="ms_device",
+            progress_action="ms_device",
+            description_placeholders=self._device.placeholders,
+            progress_task=self._device_task,
+        )
+
+    async def async_step_ms_device_complete(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Stage a verified token only after the progress step has completed."""
+        if self._removed or self._device_task is None or self._device_task.cancelled():
+            return self.async_abort(reason="ms_device_cancelled")
+        if not self._device_task.done():
+            return await self.async_step_ms_device()
+        try:
+            token = self._device_task.result()
+        except DeviceLoginError as exc:
+            return self._device_failure(str(exc))
+        except Exception:
+            return self._device_failure("cannot_connect")
+        previous_accounts = _ms_account_ids(self._loaded_data.get("ms_token"))
+        if previous_accounts and not previous_accounts.intersection(
+            _ms_account_ids(token)
+        ):
+            # Mapping IDs belong to the original Outlook account. A different
+            # account must never silently inherit them during migration/reauth.
+            return self._device_failure("ms_device_account_mismatch")
+        self._ms_token = token
+        self._clear_device()
+        if self._existing_entry is not None:
+            if self._google_needs_oauth:
+                return await self.async_step_google_auth_url()
+            return self._create_entry()
+        return await self.async_step_google_credentials()
+
+    async def async_step_ms_device_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user explicitly start a fresh code after a failed attempt."""
+        if user_input is not None:
+            return await self.async_step_ms_device()
+        return self._device_failure("ms_device_failed")
+
+    def _device_failure(self, reason: str) -> ConfigFlowResult:
+        self._clear_device()
+        if self._removed:
+            return self.async_abort(reason="ms_device_cancelled")
+        return self.async_show_form(
+            step_id="ms_device_failed",
+            data_schema=vol.Schema({}),
+            errors={"base": reason},
+        )
+
+    @callback
+    def _clear_device(self) -> None:
+        if self._device is not None:
+            self._device.cancel()
+        if self._device_task is not None:
+            if not self._device_task.done():
+                self._device_task.cancel()
+            elif not self._device_task.cancelled():
+                # Consume failures even if the user closes the flow just as a
+                # request completes; no unhandled task exception may leak.
+                self._device_task.exception()
+        self._device = None
+        self._device_task = None
+        if self._device_unsub is not None:
+            self._device_unsub()
+            self._device_unsub = None
+
+    @callback
+    def _stop_device(self, event: Event | None = None) -> None:
+        if event is not None:
+            # HA already removed this one-shot listener before invoking us.
+            self._device_unsub = None
+        self._removed = True
+        self._clear_device()
+
+    @callback
+    def async_remove(self) -> None:
+        """Discard ephemeral credentials and prevent late results being saved."""
+        self._stop_device()
+        super().async_remove()
 
     async def async_step_google_credentials(
         self, user_input: dict[str, Any] | None = None
@@ -478,6 +662,14 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_GOOGLE_CLIENT_SECRET: self._google_client_secret,
             "google_token": self._google_token,
         }
+        if self._ms_auth_mode == MS_AUTH_DEVICE_CODE:
+            data.pop(CONF_MS_CLIENT_SECRET)
+        if (
+            self._existing_entry is None
+            or CONF_MS_AUTH_MODE in self._loaded_data
+            or self._ms_auth_mode != MS_AUTH_CONFIDENTIAL
+        ):
+            data[CONF_MS_AUTH_MODE] = self._ms_auth_mode
         if self._existing_entry is not None:
             # Only what this flow changed. A sign-in can take minutes, during
             # which the running integration may persist a refreshed token;
@@ -488,9 +680,14 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
                 for key, value in data.items()
                 if value != self._loaded_data.get(key)
             }
+            # Merge against the current entry so a concurrent Google refresh
+            # is retained, then explicitly remove the obsolete Microsoft secret.
+            merged = {**self._existing_entry.data, **changed}
+            if self._ms_auth_mode == MS_AUTH_DEVICE_CODE:
+                merged.pop(CONF_MS_CLIENT_SECRET, None)
             return self.async_update_reload_and_abort(
                 self._existing_entry,
-                data_updates=changed,
+                data=merged,
             )
         return self.async_create_entry(
             title="Google → Outlook Contacts",
@@ -506,7 +703,11 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="ms_credentials",
             data_schema=self.add_suggested_values_to_schema(
-                _STEP_MS_CREDENTIALS, {CONF_MS_CLIENT_ID: self._ms_client_id}
+                _STEP_MS_CREDENTIALS,
+                {
+                    CONF_MS_CLIENT_ID: self._ms_client_id,
+                    CONF_MS_AUTH_MODE: self._ms_auth_mode,
+                },
             ),
             errors=errors,
         )
@@ -534,6 +735,20 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> ContactSyncOptionsFlow:
         return ContactSyncOptionsFlow(config_entry)
+
+
+def _ms_account_ids(token: dict[str, Any] | None) -> set[str]:
+    """Read account identity, never token contents, for mapping-safe migration."""
+    accounts = (token or {}).get("Account", {})
+    if not isinstance(accounts, dict):
+        return set()
+    return {
+        account["home_account_id"]
+        for account in accounts.values()
+        if isinstance(account, dict)
+        and isinstance(account.get("home_account_id"), str)
+        and account["home_account_id"]
+    }
 
 
 def _field(user_input: dict[str, Any], key: str) -> str:
