@@ -84,7 +84,7 @@ Copy the `custom_components/google_outlook_contacts_sync` folder into your HA `c
 
 Before starting, make sure Home Assistant knows its external URL: **Settings → System → Network → Home Assistant URL**.
 
-1. In **Settings ? Devices & Services ? Add Integration**, search for
+1. In **Settings → Devices & Services → Add Integration**, search for
    "Google Outlook Contacts Sync".
 2. Select **Device code (no secret, recommended)** and enter the Microsoft
    client ID. Leave the Microsoft secret empty.

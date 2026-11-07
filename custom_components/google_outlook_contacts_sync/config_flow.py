@@ -133,6 +133,7 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
         self._device: DeviceAuthorization | None = None
         self._device_task: asyncio.Task[dict[str, Any]] | None = None
         self._device_unsub: Callable[[], None] | None = None
+        self._device_unload_registered = False
         self._removed = False
         self._ms_client_id: str = ""
         self._ms_client_secret: str = ""
@@ -485,8 +486,9 @@ class GoogleOutlookContactsSyncConfigFlow(ConfigFlow, domain=DOMAIN):
             self._device_unsub = self.hass.bus.async_listen_once(
                 EVENT_HOMEASSISTANT_STOP, self._stop_device
             )
-            if self._existing_entry is not None:
+            if self._existing_entry is not None and not self._device_unload_registered:
                 self._existing_entry.async_on_unload(self._stop_device)
+                self._device_unload_registered = True
         if self._device_task.done():
             return self.async_show_progress_done(next_step_id="ms_device_complete")
         assert self._device is not None

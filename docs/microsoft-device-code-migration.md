@@ -27,6 +27,8 @@ checklist below is complete for every consumer.
 
 - [ ] HCP plan preserves the application and password; only the public-client
       setting changes.
+- [ ] First HA install resolves the pinned O365/MSAL requirements without
+      conflicts with other installed integrations.
 - [ ] Device login succeeds with the existing app ID and delegated permissions.
 - [ ] HA reconfiguration succeeds and the entry no longer has a Microsoft
       secret. Do not paste entry data into logs or an issue.
@@ -36,6 +38,11 @@ checklist below is complete for every consumer.
 - [ ] Failed/cancelled login leaves the working entry usable.
 - [ ] All other consumers of the old application secret have migrated.
 - [ ] Secret cleanup is reviewed separately after these checks.
+
+For legacy caches without an `Account` identity, the integration cannot
+compare the old and new Microsoft account automatically. Explicitly verify
+that the same personal Microsoft account is used during the live migration;
+existing contact mapping IDs belong to that original Outlook account.
 
 A deployment agent without account access must leave the live boxes open and
 retain the old Entra secret. Offline SDK and flow tests do not establish real

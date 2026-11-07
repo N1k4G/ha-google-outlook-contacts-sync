@@ -165,6 +165,7 @@ async def test_failure_can_explicitly_request_a_new_code(device_login):
     await flow.async_step_ms_device_failed({})
     await _finish(flow)
     assert start.call_count == 2
+    flow._existing_entry.async_on_unload.assert_called_once()
     assert CONF_MS_CLIENT_SECRET not in _written_data(flow)
 
 
